@@ -8,19 +8,21 @@ import time
 # =========================================================
 
 st.set_page_config(
-    page_title="Haiii 0xmwY",
-    page_icon="👋",
+    page_title="0xmwY Kraken",
+    page_icon="⚡",
     layout="wide"
 )
 
 OKX_BASE_URL = "https://www.okx.com"
 
+# TIMEFRAME SCREENER
 TIMEFRAMES = {
-    "5M": "5m",
     "15M": "15m",
-    "30M": "30m"
+    "30M": "30m",
+    "1H": "1H"
 }
 
+# BOLLINGER BANDS
 BB_PERIOD = 20
 BB_STD = 2
 
@@ -29,8 +31,17 @@ BB_STD = 2
 # HEADER
 # =========================================================
 
-st.title("👋 Haiii 0xmwY")
-st.caption("OKX • Bollinger Bands • 5M / 15M / 30M")
+st.title("⚡ 0xmwY Kraken")
+
+st.caption(
+    "pengembang : Lutfi Andreyansah"
+)
+
+st.markdown(
+    """
+    > **"Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"**
+    """
+)
 
 st.divider()
 
@@ -70,7 +81,7 @@ def okx_get(endpoint, params=None):
 
 
 # =========================================================
-# GET OKX SWAP SYMBOLS
+# GET ALL USDT PERPETUAL
 # =========================================================
 
 @st.cache_data(ttl=1800)
@@ -147,11 +158,10 @@ def get_candles(
     if len(rows) < BB_PERIOD + 5:
         return None
 
-    df = pd.DataFrame(rows)
-
-    # OKX biasanya newest -> oldest
+    # OKX mengirim candle terbaru lebih dulu
     df = (
-        df.iloc[::-1]
+        pd.DataFrame(rows)
+        .iloc[::-1]
         .reset_index(drop=True)
     )
 
@@ -201,6 +211,7 @@ def analyze_timeframe(df):
 
     df = calculate_bollinger(df)
 
+    # Gunakan candle yang sudah close
     current = df.iloc[-2]
     previous = df.iloc[-3]
 
@@ -229,11 +240,13 @@ def analyze_timeframe(df):
     # LONG
     # =====================================================
 
+    # Rebound dari lower Bollinger Band
     if (
         previous_close <= previous_lower
         and
         close > lower
     ):
+
         long_signal = True
 
     elif (
@@ -241,17 +254,20 @@ def analyze_timeframe(df):
         and
         close > previous_close
     ):
+
         long_signal = True
 
     # =====================================================
     # SHORT
     # =====================================================
 
+    # Rejection dari upper Bollinger Band
     if (
         previous_close >= previous_upper
         and
         close < upper
     ):
+
         short_signal = True
 
     elif (
@@ -259,6 +275,7 @@ def analyze_timeframe(df):
         and
         close < previous_close
     ):
+
         short_signal = True
 
     return {
@@ -298,24 +315,29 @@ def analyze_coin(inst_id):
         if not results:
             return None
 
+        # =================================================
+        # SIGNAL COUNT
+        # =================================================
+
         long_tf = sum(
             1
-            for x in results.values()
-            if x["long"]
+            for result in results.values()
+            if result["long"]
         )
 
         short_tf = sum(
             1
-            for x in results.values()
-            if x["short"]
+            for result in results.values()
+            if result["short"]
         )
 
         # =================================================
-        # PRICE
+        # PRICE BASE
         # =================================================
 
+        # Prioritaskan 15M sebagai timeframe utama
         base = results.get(
-            "5M",
+            "15M",
             next(iter(results.values()))
         )
 
@@ -324,7 +346,9 @@ def analyze_coin(inst_id):
         middle = base["middle"]
         lower = base["lower"]
 
-        band_width = upper - lower
+        band_width = (
+            upper - lower
+        )
 
         if band_width <= 0:
             return None
@@ -353,8 +377,9 @@ def analyze_coin(inst_id):
 
         short_tp = middle
 
-        # Kalau middle sudah terlewati,
-        # gunakan target berbasis band width
+        # Jika middle sudah berada
+        # di sisi yang salah, gunakan
+        # target berdasarkan lebar BB.
 
         if long_tp <= price:
 
@@ -418,47 +443,80 @@ def analyze_coin(inst_id):
             "Short TP":
                 short_tp,
 
-            "5M":
-                "LONG"
-                if results.get(
-                    "5M",
-                    {}
-                ).get("long", False)
-                else
-                "SHORT"
-                if results.get(
-                    "5M",
-                    {}
-                ).get("short", False)
-                else "-",
-
             "15M":
-                "LONG"
-                if results.get(
-                    "15M",
-                    {}
-                ).get("long", False)
-                else
-                "SHORT"
-                if results.get(
-                    "15M",
-                    {}
-                ).get("short", False)
-                else "-",
+                (
+                    "LONG"
+                    if results.get(
+                        "15M",
+                        {}
+                    ).get(
+                        "long",
+                        False
+                    )
+
+                    else
+
+                    "SHORT"
+                    if results.get(
+                        "15M",
+                        {}
+                    ).get(
+                        "short",
+                        False
+                    )
+
+                    else "-"
+                ),
 
             "30M":
-                "LONG"
-                if results.get(
-                    "30M",
-                    {}
-                ).get("long", False)
-                else
-                "SHORT"
-                if results.get(
-                    "30M",
-                    {}
-                ).get("short", False)
-                else "-"
+                (
+                    "LONG"
+                    if results.get(
+                        "30M",
+                        {}
+                    ).get(
+                        "long",
+                        False
+                    )
+
+                    else
+
+                    "SHORT"
+                    if results.get(
+                        "30M",
+                        {}
+                    ).get(
+                        "short",
+                        False
+                    )
+
+                    else "-"
+                ),
+
+            "1H":
+                (
+                    "LONG"
+                    if results.get(
+                        "1H",
+                        {}
+                    ).get(
+                        "long",
+                        False
+                    )
+
+                    else
+
+                    "SHORT"
+                    if results.get(
+                        "1H",
+                        {}
+                    ).get(
+                        "short",
+                        False
+                    )
+
+                    else "-"
+                )
         }
 
     except Exception:
@@ -493,26 +551,29 @@ def format_price(value):
 # SIDEBAR
 # =========================================================
 
-st.sidebar.header("⚙️ Scanner")
+st.sidebar.header(
+    "⚙️ Scanner"
+)
 
 scan_limit = st.sidebar.selectbox(
-    "Jumlah coin",
+    "Jumlah pair",
     [
         20,
         50,
         100,
         200,
-        500
+        300,
+        400
     ],
     index=2
 )
 
 st.sidebar.caption(
-    "OKX Public API"
+    "OKX USDT Perpetual"
 )
 
 st.sidebar.caption(
-    "5M • 15M • 30M"
+    "15M • 30M • 1H"
 )
 
 st.sidebar.caption(
@@ -521,7 +582,7 @@ st.sidebar.caption(
 
 
 # =========================================================
-# GET MARKET
+# MARKET
 # =========================================================
 
 try:
@@ -547,7 +608,7 @@ except Exception as e:
 
 
 # =========================================================
-# SCAN
+# SCAN BUTTON
 # =========================================================
 
 if st.button(
@@ -561,11 +622,19 @@ if st.button(
 
     results = []
 
-    progress = st.progress(0)
+    progress = st.progress(
+        0
+    )
 
     status = st.empty()
 
-    total = len(scan_symbols)
+    total = len(
+        scan_symbols
+    )
+
+    # =====================================================
+    # SCAN LOOP
+    # =====================================================
 
     for i, symbol in enumerate(
         scan_symbols
@@ -581,7 +650,6 @@ if st.button(
         )
 
         if result:
-
             results.append(
                 result
             )
@@ -590,10 +658,16 @@ if st.button(
             (i + 1) / total
         )
 
-        time.sleep(0.08)
+        time.sleep(
+            0.08
+        )
 
     progress.empty()
     status.empty()
+
+    # =====================================================
+    # CHECK RESULT
+    # =====================================================
 
     if not results:
 
@@ -608,33 +682,35 @@ if st.button(
     )
 
     # =====================================================
-    # LONG
+    # LONG CANDIDATES
     # =====================================================
 
     long_df = df[
         df["Long TF"] > 0
     ].copy()
 
-    long_df = long_df.sort_values(
-        by=[
-            "Long TF"
-        ],
-        ascending=False
+    long_df = (
+        long_df
+        .sort_values(
+            by="Long TF",
+            ascending=False
+        )
     )
 
     # =====================================================
-    # SHORT
+    # SHORT CANDIDATES
     # =====================================================
 
     short_df = df[
         df["Short TF"] > 0
     ].copy()
 
-    short_df = short_df.sort_values(
-        by=[
-            "Short TF"
-        ],
-        ascending=False
+    short_df = (
+        short_df
+        .sort_values(
+            by="Short TF",
+            ascending=False
+        )
     )
 
     # =====================================================
@@ -653,27 +729,29 @@ if st.button(
 
     if len(long_df) > 0:
 
-        best = long_df.iloc[0]
+        best_long = (
+            long_df.iloc[0]
+        )
 
         st.success(
             f"""
 🟢 **TARGET LONG**
 
-### {best["Coin"]}
+### {best_long["Coin"]}
 
 **Entry**
 
-`{format_price(best["Long Entry Low"])}`
+`{format_price(best_long["Long Entry Low"])}`
 →
-`{format_price(best["Long Entry High"])}`
+`{format_price(best_long["Long Entry High"])}`
 
 **Take Profit**
 
-`{format_price(best["Long TP"])}`
+`{format_price(best_long["Long TP"])}`
 
 **Konfirmasi**
 
-{int(best["Long TF"])}/3 timeframe
+{int(best_long["Long TF"])}/3 timeframe
 """
         )
 
@@ -689,27 +767,29 @@ if st.button(
 
     if len(short_df) > 0:
 
-        best = short_df.iloc[0]
+        best_short = (
+            short_df.iloc[0]
+        )
 
         st.error(
             f"""
 🔴 **TARGET SHORT**
 
-### {best["Coin"]}
+### {best_short["Coin"]}
 
 **Entry**
 
-`{format_price(best["Short Entry Low"])}`
+`{format_price(best_short["Short Entry Low"])}`
 →
-`{format_price(best["Short Entry High"])}`
+`{format_price(best_short["Short Entry High"])}`
 
 **Take Profit**
 
-`{format_price(best["Short TP"])}`
+`{format_price(best_short["Short TP"])}`
 
 **Konfirmasi**
 
-{int(best["Short TF"])}/3 timeframe
+{int(best_short["Short TF"])}/3 timeframe
 """
         )
 
@@ -720,7 +800,7 @@ if st.button(
         )
 
     # =====================================================
-    # LONG CANDIDATES
+    # LONG LIST
     # =====================================================
 
     st.divider()
@@ -733,15 +813,17 @@ if st.button(
 
         display_long = pd.DataFrame({
 
-            "Coin":
+            "Pair":
                 long_df["Coin"],
 
             "Target Long":
                 long_df.apply(
                     lambda row:
-                    f"{format_price(row['Long Entry Low'])} "
-                    f"→ "
-                    f"{format_price(row['Long Entry High'])}",
+                    (
+                        f"{format_price(row['Long Entry Low'])}"
+                        f" → "
+                        f"{format_price(row['Long Entry High'])}"
+                    ),
                     axis=1
                 ),
 
@@ -753,10 +835,13 @@ if st.button(
                 ),
 
             "Confirm":
-                long_df[
-                    "Long TF"
-                ].astype(str)
-                + "/3"
+                (
+                    long_df[
+                        "Long TF"
+                    ].astype(str)
+                    +
+                    "/3"
+                )
         })
 
         st.dataframe(
@@ -772,7 +857,7 @@ if st.button(
         )
 
     # =====================================================
-    # SHORT CANDIDATES
+    # SHORT LIST
     # =====================================================
 
     st.subheader(
@@ -783,15 +868,17 @@ if st.button(
 
         display_short = pd.DataFrame({
 
-            "Coin":
+            "Pair":
                 short_df["Coin"],
 
             "Target Short":
                 short_df.apply(
                     lambda row:
-                    f"{format_price(row['Short Entry Low'])} "
-                    f"→ "
-                    f"{format_price(row['Short Entry High'])}",
+                    (
+                        f"{format_price(row['Short Entry Low'])}"
+                        f" → "
+                        f"{format_price(row['Short Entry High'])}"
+                    ),
                     axis=1
                 ),
 
@@ -803,10 +890,13 @@ if st.button(
                 ),
 
             "Confirm":
-                short_df[
-                    "Short TF"
-                ].astype(str)
-                + "/3"
+                (
+                    short_df[
+                        "Short TF"
+                    ].astype(str)
+                    +
+                    "/3"
+                )
         })
 
         st.dataframe(
@@ -822,7 +912,7 @@ if st.button(
         )
 
     # =====================================================
-    # TIMEFRAME
+    # TIMEFRAME DETAIL
     # =====================================================
 
     with st.expander(
@@ -833,19 +923,18 @@ if st.button(
             [
                 "Coin",
                 "Direction",
-                "5M",
                 "15M",
                 "30M",
+                "1H",
                 "Long TF",
                 "Short TF",
                 "Price"
             ]
         ].copy()
 
-        detail["Price"] = detail[
-            "Price"
-        ].apply(
-            format_price
+        detail["Price"] = (
+            detail["Price"]
+            .apply(format_price)
         )
 
         st.dataframe(
@@ -854,8 +943,16 @@ if st.button(
             hide_index=True
         )
 
+    # =====================================================
+    # FOOTER
+    # =====================================================
+
+    st.divider()
+
     st.caption(
-        "Signal menggunakan Bollinger Bands "
-        "periode 20 dengan 2 standard deviation. "
-        "Ini adalah signal teknikal, bukan jaminan profit."
+        "Bollinger Bands: period 20 • standard deviation 2"
+    )
+
+    st.caption(
+        "Signal bersifat teknikal dan bukan jaminan profit. DYOR."
         )
