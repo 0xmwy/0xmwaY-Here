@@ -1,9 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
-import zipfile
-import io
-from datetime import datetime, timedelta, timezone
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -17,24 +15,18 @@ st.set_page_config(
     layout="wide"
 )
 
-DATA_URL = "https://data.binance.vision"
+API_URL = "https://api.bybit.com"
 
 EMA_TREND = 200
 EMA_FAST = 9
 EMA_SLOW = 21
 RSI_PERIOD = 14
 
-TIMEFRAMES = {
-    "5m": "5m",
-    "15m": "15m",
-    "1H": "1h"
-}
-
-MAX_WORKERS = 8
+MAX_WORKERS = 10
 
 
 # =========================================================
-# STYLE
+# HEADER
 # =========================================================
 
 st.markdown(
@@ -52,17 +44,11 @@ st.markdown(
 
     .subtitle {
         color: #8b949e;
-        font-size: 15px;
     }
     </style>
     """,
     unsafe_allow_html=True
 )
-
-
-# =========================================================
-# HEADER
-# =========================================================
 
 st.markdown(
     '<div class="title">👋 Haiii 0xmwY</div>',
@@ -70,7 +56,7 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="subtitle">Scalping Market Screener</div>',
+    '<div class="subtitle">Live Public Market Screener</div>',
     unsafe_allow_html=True
 )
 
@@ -90,171 +76,142 @@ with col1:
     )
 
 with col2:
-    min_score = st.selectbox(
+    minimum_score = st.selectbox(
         "Minimum Score",
         [3, 4, 5],
         index=0
     )
 
 with col3:
-    max_results = st.selectbox(
-        "Tampilkan",
-        [20, 50, 100, 200],
+    refresh_seconds = st.selectbox(
+        "Auto Refresh",
+        [30, 60, 120],
         index=1
     )
 
+
 st.caption(
-    "Semua USDT-M perpetual • 1H + 15m trend • 5m momentum"
+    "1H + 15m = trend • 5m = momentum"
 )
 
 
 # =========================================================
-# HTTP SESSION
+# REQUEST SESSION
 # =========================================================
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json"
+    "User-Agent": "Mozilla/5.0"
 })
 
 
 # =========================================================
-# GET ALL SYMBOLS
+# GET ALL BYBIT USDT PERPETUALS
 # =========================================================
 
-@st.cache_data(ttl=3600)
-def get_all_symbols():
-
-    # Kita coba beberapa endpoint metadata Binance.
-    # Ini hanya untuk mendapatkan daftar pair.
-    urls = [
-        "https://fapi.binance.com/fapi/v1/exchangeInfo",
-        "https://fapi1.binance.com/fapi/v1/exchangeInfo",
-        "https://fapi2.binance.com/fapi/v1/exchangeInfo",
-        "https://fapi3.binance.com/fapi/v1/exchangeInfo",
-        "https://fapi4.binance.com/fapi/v1/exchangeInfo"
-    ]
-
-    for url in urls:
-
-        try:
-
-            response = session.get(
-                url,
-                timeout=15
-            )
-
-            if response.status_code != 200:
-                continue
-
-            data = response.json()
-
-            symbols = []
-
-            for item in data.get(
-                "symbols",
-                []
-            ):
-
-                if (
-                    item.get("status") == "TRADING"
-                    and item.get("contractType")
-                    == "PERPETUAL"
-                    and item.get("quoteAsset")
-                    == "USDT"
-                ):
-
-                    symbols.append(
-                        item["symbol"]
-                    )
-
-            if symbols:
-                return sorted(
-                    list(set(symbols))
-                )
-
-        except Exception:
-            continue
-
-    return []
-
-
-# =========================================================
-# DOWNLOAD HISTORICAL KLINES
-# =========================================================
-
-@st.cache_data(ttl=1800)
-def download_klines(
-    symbol,
-    interval,
-    date
-):
-
-    date_string = date.strftime(
-        "%Y-%m-%d"
-    )
+@st.cache_data(ttl=900)
+def get_symbols():
 
     url = (
-        f"{DATA_URL}/data/futures/um/daily/"
-        f"klines/{symbol}/{interval}/"
-        f"{symbol}-{interval}-{date_string}.zip"
+        f"{API_URL}/v5/market/instruments-info"
+        "?category=linear"
+        "&limit=1000"
     )
 
     try:
 
-        response = requests.get(
+        response = session.get(
             url,
-            timeout=30,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            }
+            timeout=15
         )
 
-        if response.status_code != 200:
-            return None
+        response.raise_for_status()
 
-        if not response.content:
-            return None
+        data = response.json()
 
-        with zipfile.ZipFile(
-            io.BytesIO(response.content)
-        ) as z:
+        if data.get("retCode") != 0:
+            return []
 
-            names = z.namelist()
+        symbols = []
 
-            if not names:
-                return None
+        for item in data["result"]["list"]:
 
-            with z.open(names[0]) as f:
+            if (
+                item.get("status") == "Trading"
+                and item.get("quoteCoin") == "USDT"
+                and item.get("contractType")
+                == "LinearPerpetual"
+            ):
 
-                df = pd.read_csv(
-                    f,
-                    header=None
+                symbols.append(
+                    item["symbol"]
                 )
 
-        if df.empty:
+        return sorted(
+            list(set(symbols))
+        )
+
+    except Exception:
+
+        return []
+
+
+# =========================================================
+# GET KLINES
+# =========================================================
+
+def get_klines(
+    symbol,
+    interval,
+    limit=250
+):
+
+    url = (
+        f"{API_URL}/v5/market/kline"
+    )
+
+    params = {
+        "category": "linear",
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+
+    try:
+
+        response = session.get(
+            url,
+            params=params,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get("retCode") != 0:
             return None
 
-        columns = [
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_volume",
-            "trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore"
-        ]
+        rows = data[
+            "result"
+        ]["list"]
 
-        df = df.iloc[:, :12]
+        if not rows:
+            return None
 
-        df.columns = columns
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "turnover"
+            ]
+        )
 
         for column in [
             "open",
@@ -269,11 +226,17 @@ def download_klines(
                 errors="coerce"
             )
 
-        df = df.dropna(
-            subset=[
-                "close",
-                "volume"
-            ]
+        df["time"] = pd.to_datetime(
+            pd.to_numeric(
+                df["time"]
+            ),
+            unit="ms"
+        )
+
+        df = df.sort_values(
+            "time"
+        ).reset_index(
+            drop=True
         )
 
         return df
@@ -284,47 +247,10 @@ def download_klines(
 
 
 # =========================================================
-# GET LATEST AVAILABLE DATA
-# =========================================================
-
-def get_data(
-    symbol,
-    interval
-):
-
-    today = datetime.now(
-        timezone.utc
-    ).date()
-
-    for days_back in range(1, 8):
-
-        target_date = (
-            today -
-            timedelta(days=days_back)
-        )
-
-        df = download_klines(
-            symbol,
-            interval,
-            target_date
-        )
-
-        if (
-            df is not None
-            and len(df)
-            >= EMA_TREND + 30
-        ):
-
-            return df
-
-    return None
-
-
-# =========================================================
 # INDICATORS
 # =========================================================
 
-def add_indicators(df):
+def calculate_indicators(df):
 
     df = df.copy()
 
@@ -396,7 +322,7 @@ def add_indicators(df):
         )
     )
 
-    # Volume
+    # Volume average
     df["volume_avg"] = (
         df["volume"]
         .rolling(20)
@@ -407,26 +333,32 @@ def add_indicators(df):
 
 
 # =========================================================
-# ANALYZE SYMBOL
+# ANALYZE COIN
 # =========================================================
 
 def analyze_symbol(symbol):
 
     try:
 
-        data_1h = get_data(
+        # 1H
+        data_1h = get_klines(
             symbol,
-            "1h"
+            "60",
+            250
         )
 
-        data_15m = get_data(
+        # 15M
+        data_15m = get_klines(
             symbol,
-            "15m"
+            "15",
+            250
         )
 
-        data_5m = get_data(
+        # 5M
+        data_5m = get_klines(
             symbol,
-            "5m"
+            "5",
+            250
         )
 
         if (
@@ -436,24 +368,31 @@ def analyze_symbol(symbol):
         ):
             return None
 
-        data_1h = add_indicators(
+        if (
+            len(data_1h) < 220
+            or len(data_15m) < 220
+            or len(data_5m) < 220
+        ):
+            return None
+
+        data_1h = calculate_indicators(
             data_1h
         )
 
-        data_15m = add_indicators(
+        data_15m = calculate_indicators(
             data_15m
         )
 
-        data_5m = add_indicators(
+        data_5m = calculate_indicators(
             data_5m
         )
 
-        h1 = data_1h.iloc[-1]
-        m15 = data_15m.iloc[-1]
-        m5 = data_5m.iloc[-1]
+        h1 = data_1h.iloc[-2]
+        m15 = data_15m.iloc[-2]
+        m5 = data_5m.iloc[-2]
 
         # =================================================
-        # SHORT SCORE
+        # SHORT
         # =================================================
 
         short_score = 0
@@ -475,7 +414,7 @@ def analyze_symbol(symbol):
 
 
         # =================================================
-        # LONG SCORE
+        # LONG
         # =================================================
 
         long_score = 0
@@ -497,12 +436,12 @@ def analyze_symbol(symbol):
 
 
         # =================================================
-        # SIGNAL
+        # SELECT
         # =================================================
 
         if (
             direction in ["ALL", "SHORT"]
-            and short_score >= min_score
+            and short_score >= minimum_score
         ):
 
             signal = "SHORT"
@@ -510,7 +449,7 @@ def analyze_symbol(symbol):
 
         elif (
             direction in ["ALL", "LONG"]
-            and long_score >= min_score
+            and long_score >= minimum_score
         ):
 
             signal = "LONG"
@@ -540,8 +479,9 @@ def analyze_symbol(symbol):
             "Signal": signal,
             "Score": f"{score}/5",
             "Strength": strength,
-            "Price": float(
-                m5["close"]
+            "Price": round(
+                float(m5["close"]),
+                8
             ),
             "RSI": round(
                 float(m5["rsi"]),
@@ -555,7 +495,7 @@ def analyze_symbol(symbol):
 
 
 # =========================================================
-# SCAN ALL MARKET
+# SCAN ALL
 # =========================================================
 
 def scan_market(symbols):
@@ -574,13 +514,13 @@ def scan_market(symbols):
         max_workers=MAX_WORKERS
     ) as executor:
 
-        futures = {
+        futures = [
             executor.submit(
                 analyze_symbol,
                 symbol
-            ): symbol
+            )
             for symbol in symbols
-        }
+        ]
 
         for future in as_completed(
             futures
@@ -606,7 +546,7 @@ def scan_market(symbols):
 
             status.write(
                 f"Scanning "
-                f"{completed}/{total} coins..."
+                f"{completed}/{total}..."
             )
 
     progress.empty()
@@ -616,51 +556,73 @@ def scan_market(symbols):
 
 
 # =========================================================
-# BUTTON
+# MAIN BUTTON
 # =========================================================
 
 if st.button(
-    "🔄 SCAN ALL BINANCE",
+    "🔴 START LIVE SCANNER",
     use_container_width=True
 ):
 
-    with st.spinner(
-        "Mengambil semua pair Binance Futures..."
-    ):
+    st.session_state[
+        "running"
+    ] = True
 
-        symbols = get_all_symbols()
 
-        if not symbols:
+if st.button(
+    "⏹ STOP SCANNER",
+    use_container_width=True
+):
 
-            st.error(
-                "Tidak bisa mendapatkan daftar "
-                "coin Binance Futures."
-            )
+    st.session_state[
+        "running"
+    ] = False
 
-        else:
 
-            st.info(
-                f"{len(symbols)} pair ditemukan. "
-                "Memulai scanning..."
-            )
+# =========================================================
+# INITIAL STATE
+# =========================================================
 
-            results = scan_market(
-                symbols
-            )
+if "running" not in st.session_state:
 
-            st.session_state[
-                "results"
-            ] = results
+    st.session_state[
+        "running"
+    ] = False
 
-            st.session_state[
-                "scan_time"
-            ] = datetime.now(
-                timezone.utc
-            )
 
-            st.session_state[
-                "symbol_count"
-            ] = len(symbols)
+# =========================================================
+# RUN
+# =========================================================
+
+if st.session_state["running"]:
+
+    symbols = get_symbols()
+
+    if not symbols:
+
+        st.error(
+            "Gagal mengambil daftar coin "
+            "dari public market data."
+        )
+
+    else:
+
+        st.info(
+            f"📡 Monitoring "
+            f"{len(symbols)} USDT perpetual"
+        )
+
+        results = scan_market(
+            symbols
+        )
+
+        st.session_state[
+            "results"
+        ] = results
+
+        st.session_state[
+            "last_update"
+        ] = time.time()
 
 
 # =========================================================
@@ -678,7 +640,7 @@ if "results" in st.session_state:
     if not results:
 
         st.warning(
-            "Tidak ada setup yang memenuhi filter."
+            "Belum ada setup yang memenuhi filter."
         )
 
     else:
@@ -704,12 +666,8 @@ if "results" in st.session_state:
             columns=["_score"]
         )
 
-        df = df.head(
-            max_results
-        )
-
         st.subheader(
-            f"📊 Top {len(df)} Setup"
+            f"📊 {len(df)} Setup"
         )
 
         st.dataframe(
@@ -720,29 +678,16 @@ if "results" in st.session_state:
 
 
 # =========================================================
-# INFO
+# AUTO REFRESH
 # =========================================================
 
-if "symbol_count" in st.session_state:
+if st.session_state.get(
+    "running",
+    False
+):
 
-    st.caption(
-        "Pair scanned: "
-        + str(
-            st.session_state[
-                "symbol_count"
-            ]
-        )
+    time.sleep(
+        refresh_seconds
     )
 
-
-if "scan_time" in st.session_state:
-
-    st.caption(
-        "Last scan: "
-        +
-        st.session_state[
-            "scan_time"
-        ].strftime(
-            "%Y-%m-%d %H:%M:%S UTC"
-        )
-    )
+    st.rerun()
