@@ -1,7 +1,9 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import time
+
 
 # =========================================================
 # CONFIG
@@ -31,9 +33,7 @@ BB_STD = 2
 
 st.title("⚡ 0xmwY Kraken")
 
-st.caption(
-    "pengembang : Lutfi Andreyansah"
-)
+st.caption("pengembang : Lutfi Andreyansah")
 
 st.markdown(
     """
@@ -45,7 +45,7 @@ st.divider()
 
 
 # =========================================================
-# API REQUEST
+# API
 # =========================================================
 
 def api_get(endpoint, params=None):
@@ -72,7 +72,7 @@ def api_get(endpoint, params=None):
 
 
 # =========================================================
-# GET PAIR
+# GET PAIRS
 # =========================================================
 
 @st.cache_data(ttl=1800)
@@ -112,7 +112,7 @@ def get_symbols():
 # GET CANDLES
 # =========================================================
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=20)
 def get_candles(inst_id, bar):
 
     data = api_get(
@@ -146,17 +146,15 @@ def get_candles(inst_id, bar):
     if len(rows) < BB_PERIOD + 5:
         return None
 
-    df = (
+    return (
         pd.DataFrame(rows)
         .iloc[::-1]
         .reset_index(drop=True)
     )
 
-    return df
-
 
 # =========================================================
-# CALCULATE BANDS
+# BOLLINGER CALCULATION
 # =========================================================
 
 def calculate_bands(df):
@@ -220,9 +218,7 @@ def analyze_timeframe(df):
     long_signal = False
     short_signal = False
 
-    # =====================================================
     # LONG
-    # =====================================================
 
     if (
         previous_close <= previous_lower
@@ -236,9 +232,7 @@ def analyze_timeframe(df):
     ):
         long_signal = True
 
-    # =====================================================
     # SHORT
-    # =====================================================
 
     if (
         previous_close >= previous_upper
@@ -282,9 +276,7 @@ def analyze_pair(inst_id):
             if df is None:
                 continue
 
-            results[label] = analyze_timeframe(
-                df
-            )
+            results[label] = analyze_timeframe(df)
 
         if not results:
             return None
@@ -316,23 +308,10 @@ def analyze_pair(inst_id):
         if band_width <= 0:
             return None
 
-        # =================================================
-        # ENTRY LONG
-        # =================================================
+        # LONG
 
         long_entry_low = lower
         long_entry_high = price
-
-        # =================================================
-        # ENTRY SHORT
-        # =================================================
-
-        short_entry_low = price
-        short_entry_high = upper
-
-        # =================================================
-        # TAKE PROFIT
-        # =================================================
 
         long_tp = middle
 
@@ -342,6 +321,11 @@ def analyze_pair(inst_id):
                 + band_width * 0.50
             )
 
+        # SHORT
+
+        short_entry_low = price
+        short_entry_high = upper
+
         short_tp = middle
 
         if short_tp >= price:
@@ -350,9 +334,7 @@ def analyze_pair(inst_id):
                 - band_width * 0.50
             )
 
-        # =================================================
         # DIRECTION
-        # =================================================
 
         if long_tf > short_tf:
             direction = "LONG"
@@ -362,9 +344,6 @@ def analyze_pair(inst_id):
 
         else:
             direction = "NEUTRAL"
-
-        # Hanya nama tampilan yang diubah.
-        # Request API tetap memakai inst_id lengkap.
 
         display_pair = inst_id.replace(
             "-SWAP",
@@ -469,6 +448,7 @@ def analyze_pair(inst_id):
         }
 
     except Exception:
+
         return None
 
 
@@ -493,6 +473,152 @@ def format_price(value):
         return f"{value:.8f}"
 
     return f"{value:.10g}"
+
+
+# =========================================================
+# TRADINGVIEW SYMBOL
+# =========================================================
+
+def get_tradingview_symbol(inst_id):
+
+    pair = inst_id.replace(
+        "-SWAP",
+        ""
+    )
+
+    pair = pair.replace(
+        "-",
+        ""
+    )
+
+    return f"OKX:{pair}.P"
+
+
+# =========================================================
+# TRADINGVIEW OFFICIAL CHART
+# =========================================================
+
+def show_tradingview_chart(
+    inst_id,
+    timeframe
+):
+
+    tv_symbol = get_tradingview_symbol(
+        inst_id
+    )
+
+    tv_interval = {
+        "15M": "15",
+        "30M": "30",
+        "1H": "60"
+    }.get(
+        timeframe,
+        "15"
+    )
+
+    chart_html = f"""
+    <!DOCTYPE html>
+
+    <html>
+
+    <head>
+
+        <meta charset="UTF-8">
+
+        <style>
+
+            html,
+            body {{
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                background: #131722;
+            }}
+
+            .tradingview-widget-container {{
+                width: 100%;
+                height: 100%;
+            }}
+
+            .tradingview-widget-container__widget {{
+                width: 100%;
+                height: 100%;
+            }}
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <div
+            class="tradingview-widget-container"
+        >
+
+            <div
+                class="tradingview-widget-container__widget"
+            ></div>
+
+            <script
+                type="text/javascript"
+                src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
+                async
+            >
+            {{
+                "autosize": true,
+                "symbol": "{tv_symbol}",
+                "interval": "{tv_interval}",
+                "timezone": "Asia/Jakarta",
+                "theme": "dark",
+                "style": "1",
+                "locale": "en",
+                "enable_publishing": false,
+                "hide_top_toolbar": false,
+                "hide_legend": false,
+                "allow_symbol_change": false,
+                "save_image": false,
+                "calendar": false,
+                "support_host": "https://www.tradingview.com"
+            }}
+            </script>
+
+        </div>
+
+    </body>
+
+    </html>
+    """
+
+    components.html(
+        chart_html,
+        height=600,
+        scrolling=False
+    )
+
+
+# =========================================================
+# LOAD MARKET
+# =========================================================
+
+try:
+
+    symbols = get_symbols()
+
+    st.info(
+        f"Ditemukan **{len(symbols)} pair USDT**."
+    )
+
+except Exception as e:
+
+    st.error(
+        "❌ Gagal mengambil data market."
+    )
+
+    st.code(str(e))
+
+    st.stop()
 
 
 # =========================================================
@@ -524,26 +650,42 @@ st.sidebar.caption(
 
 
 # =========================================================
-# LOAD MARKET
+# TRADINGVIEW
 # =========================================================
 
-try:
+st.divider()
 
-    symbols = get_symbols()
+st.header("📈 Live Chart")
 
-    st.info(
-        f"Ditemukan **{len(symbols)} pair USDT**."
-    )
+chart_pair = st.selectbox(
+    "Pilih pair",
+    symbols,
+    format_func=lambda x:
+        x.replace(
+            "-SWAP",
+            ""
+        ),
+    key="tv_pair"
+)
 
-except Exception as e:
+chart_tf = st.selectbox(
+    "Timeframe",
+    [
+        "15M",
+        "30M",
+        "1H"
+    ],
+    key="tv_timeframe"
+)
 
-    st.error(
-        "❌ Gagal mengambil data market."
-    )
+show_tradingview_chart(
+    chart_pair,
+    chart_tf
+)
 
-    st.code(str(e))
-
-    st.stop()
+st.caption(
+    f"{chart_pair.replace('-SWAP', '')} • {chart_tf}"
+)
 
 
 # =========================================================
@@ -565,16 +707,13 @@ if st.button(
 
     total = len(scan_symbols)
 
-    # =====================================================
-    # SCAN
-    # =====================================================
-
     for i, symbol in enumerate(
         scan_symbols
     ):
 
         status.write(
-            f"Scanning {symbol} "
+            f"Scanning "
+            f"{symbol.replace('-SWAP', '')} "
             f"({i + 1}/{total})"
         )
 
@@ -594,10 +733,6 @@ if st.button(
     progress.empty()
     status.empty()
 
-    # =====================================================
-    # RESULT
-    # =====================================================
-
     if not results:
 
         st.warning(
@@ -607,6 +742,7 @@ if st.button(
         st.stop()
 
     df = pd.DataFrame(results)
+
 
     # =====================================================
     # LONG
@@ -624,6 +760,7 @@ if st.button(
         )
     )
 
+
     # =====================================================
     # SHORT
     # =====================================================
@@ -640,18 +777,18 @@ if st.button(
         )
     )
 
+
     # =====================================================
     # TRADE SETUP
     # =====================================================
 
     st.divider()
 
-    st.header(
-        "🎯 Trade Setup"
-    )
+    st.header("🎯 Trade Setup")
+
 
     # =====================================================
-    # TARGET LONG
+    # OUTLOOK LONG
     # =====================================================
 
     if len(long_df) > 0:
@@ -660,15 +797,13 @@ if st.button(
 
         st.success(
             f"""
-🟢 **TARGET LONG**
+🟢 **OUTLOOK LONG**
 
 ### {best_long["Coin"]}
 
-**Entry**
+**Outlook Long**
 
-`{format_price(best_long["Long Entry Low"])}`
-→
-`{format_price(best_long["Long Entry High"])}`
+`{format_price(best_long["Long Entry Low"])} - {format_price(best_long["Long Entry High"])}`
 
 **Take Profit**
 
@@ -686,8 +821,9 @@ if st.button(
             "Belum ada signal LONG."
         )
 
+
     # =====================================================
-    # TARGET SHORT
+    # OUTLOOK SHORT
     # =====================================================
 
     if len(short_df) > 0:
@@ -696,15 +832,13 @@ if st.button(
 
         st.error(
             f"""
-🔴 **TARGET SHORT**
+🔴 **OUTLOOK SHORT**
 
 ### {best_short["Coin"]}
 
-**Entry**
+**Outlook Short**
 
-`{format_price(best_short["Short Entry Low"])}`
-→
-`{format_price(best_short["Short Entry High"])}`
+`{format_price(best_short["Short Entry Low"])} - {format_price(best_short["Short Entry High"])}`
 
 **Take Profit**
 
@@ -721,6 +855,7 @@ if st.button(
         st.info(
             "Belum ada signal SHORT."
         )
+
 
     # =====================================================
     # LONG CANDIDATES
@@ -739,12 +874,12 @@ if st.button(
             "Pair":
                 long_df["Coin"],
 
-            "Target Long":
+            "Outlook Long":
                 long_df.apply(
                     lambda row:
                     (
                         f"{format_price(row['Long Entry Low'])}"
-                        f" → "
+                        f" - "
                         f"{format_price(row['Long Entry High'])}"
                     ),
                     axis=1
@@ -775,6 +910,7 @@ if st.button(
             "Tidak ada kandidat LONG."
         )
 
+
     # =====================================================
     # SHORT CANDIDATES
     # =====================================================
@@ -790,12 +926,12 @@ if st.button(
             "Pair":
                 short_df["Coin"],
 
-            "Target Short":
+            "Outlook Short":
                 short_df.apply(
                     lambda row:
                     (
                         f"{format_price(row['Short Entry Low'])}"
-                        f" → "
+                        f" - "
                         f"{format_price(row['Short Entry High'])}"
                     ),
                     axis=1
@@ -825,6 +961,7 @@ if st.button(
         st.write(
             "Tidak ada kandidat SHORT."
         )
+
 
     # =====================================================
     # TIMEFRAME DETAIL
@@ -858,12 +995,13 @@ if st.button(
             hide_index=True
         )
 
-    # =====================================================
-    # FOOTER
-    # =====================================================
 
-    st.divider()
+# =========================================================
+# FOOTER
+# =========================================================
 
-    st.caption(
-        "Signal bersifat teknikal dan bukan jaminan profit. DYOR."
-        )
+st.divider()
+
+st.caption(
+    "Signal bersifat teknikal dan bukan jaminan profit. DYOR."
+)
