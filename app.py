@@ -4,7 +4,6 @@ import requests
 import pandas as pd
 import time
 
-
 # =========================================================
 # CONFIG
 # =========================================================
@@ -32,7 +31,6 @@ BB_STD = 2
 # =========================================================
 
 st.title("⚡ 0xmwY Kraken")
-
 st.caption("pengembang : Lutfi Andreyansah")
 
 st.markdown(
@@ -43,7 +41,7 @@ st.divider()
 
 
 # =========================================================
-# API REQUEST
+# API
 # =========================================================
 
 def api_get(endpoint, params=None):
@@ -70,7 +68,7 @@ def api_get(endpoint, params=None):
 
 
 # =========================================================
-# GET USDT SWAP PAIRS
+# GET PAIRS
 # =========================================================
 
 @st.cache_data(ttl=1800)
@@ -78,9 +76,7 @@ def get_symbols():
 
     data = api_get(
         "/api/v5/public/instruments",
-        {
-            "instType": "SWAP"
-        }
+        {"instType": "SWAP"}
     )
 
     symbols = []
@@ -139,11 +135,13 @@ def get_candles(inst_id, bar):
     if len(rows) < BB_PERIOD + 5:
         return None
 
-    return (
-        pd.DataFrame(rows)
-        .iloc[::-1]
-        .reset_index(drop=True)
-    )
+    df = pd.DataFrame(rows)
+
+    df = df.iloc[::-1]
+
+    df = df.reset_index(drop=True)
+
+    return df
 
 
 # =========================================================
@@ -211,9 +209,7 @@ def analyze_timeframe(df):
     long_signal = False
     short_signal = False
 
-    # -----------------------------------------------------
     # LONG
-    # -----------------------------------------------------
 
     if (
         previous_close <= previous_lower
@@ -227,9 +223,7 @@ def analyze_timeframe(df):
     ):
         long_signal = True
 
-    # -----------------------------------------------------
     # SHORT
-    # -----------------------------------------------------
 
     if (
         previous_close >= previous_upper
@@ -261,9 +255,9 @@ def analyze_pair(inst_id):
 
     try:
 
-        results = {}
+        tf_results = {}
 
-        for label, bar in TIMEFRAMES.items():
+        for tf_name, bar in TIMEFRAMES.items():
 
             df = get_candles(
                 inst_id,
@@ -273,26 +267,27 @@ def analyze_pair(inst_id):
             if df is None:
                 continue
 
-            results[label] = analyze_timeframe(df)
+            tf_results[tf_name] = analyze_timeframe(
+                df
+            )
 
-        if not results:
+        if not tf_results:
             return None
 
-        long_tf = sum(
-            1
-            for result in results.values()
-            if result["long"]
-        )
+        long_count = 0
+        short_count = 0
 
-        short_tf = sum(
-            1
-            for result in results.values()
-            if result["short"]
-        )
+        for result in tf_results.values():
 
-        base = results.get(
+            if result["long"]:
+                long_count += 1
+
+            if result["short"]:
+                short_count += 1
+
+        base = tf_results.get(
             "15M",
-            next(iter(results.values()))
+            list(tf_results.values())[0]
         )
 
         price = base["close"]
@@ -305,9 +300,7 @@ def analyze_pair(inst_id):
         if band_width <= 0:
             return None
 
-        # -------------------------------------------------
-        # LONG OUTLOOK
-        # -------------------------------------------------
+        # LONG
 
         long_entry_low = lower
         long_entry_high = price
@@ -320,9 +313,7 @@ def analyze_pair(inst_id):
                 + band_width * 0.50
             )
 
-        # -------------------------------------------------
-        # SHORT OUTLOOK
-        # -------------------------------------------------
+        # SHORT
 
         short_entry_low = price
         short_entry_high = upper
@@ -335,118 +326,64 @@ def analyze_pair(inst_id):
                 - band_width * 0.50
             )
 
-        # -------------------------------------------------
-        # DIRECTION
-        # -------------------------------------------------
-
-        if long_tf > short_tf:
-            direction = "LONG"
-
-        elif short_tf > long_tf:
-            direction = "SHORT"
-
-        else:
-            direction = "NEUTRAL"
+        # Display pair tanpa SWAP
 
         display_pair = inst_id.replace(
             "-SWAP",
             ""
         )
 
-        return {
-            "Coin": display_pair,
-            "InstID": inst_id,
-            "Direction": direction,
+        result = {
+            "pair": display_pair,
+            "inst_id": inst_id,
 
-            "Long TF": long_tf,
-            "Short TF": short_tf,
+            "long_count": long_count,
+            "short_count": short_count,
 
-            "Price": price,
+            "price": price,
 
-            "Long Entry Low":
+            "long_entry_low":
                 long_entry_low,
 
-            "Long Entry High":
+            "long_entry_high":
                 long_entry_high,
 
-            "Long TP":
+            "long_tp":
                 long_tp,
 
-            "Short Entry Low":
+            "short_entry_low":
                 short_entry_low,
 
-            "Short Entry High":
+            "short_entry_high":
                 short_entry_high,
 
-            "Short TP":
+            "short_tp":
                 short_tp,
 
             "15M":
-                (
-                    "LONG"
-                    if results.get(
-                        "15M",
-                        {}
-                    ).get(
-                        "long",
-                        False
-                    )
-                    else
-                    "SHORT"
-                    if results.get(
-                        "15M",
-                        {}
-                    ).get(
-                        "short",
-                        False
-                    )
-                    else "-"
-                ),
+                "-",
 
             "30M":
-                (
-                    "LONG"
-                    if results.get(
-                        "30M",
-                        {}
-                    ).get(
-                        "long",
-                        False
-                    )
-                    else
-                    "SHORT"
-                    if results.get(
-                        "30M",
-                        {}
-                    ).get(
-                        "short",
-                        False
-                    )
-                    else "-"
-                ),
+                "-",
 
             "1H":
-                (
-                    "LONG"
-                    if results.get(
-                        "1H",
-                        {}
-                    ).get(
-                        "long",
-                        False
-                    )
-                    else
-                    "SHORT"
-                    if results.get(
-                        "1H",
-                        {}
-                    ).get(
-                        "short",
-                        False
-                    )
-                    else "-"
-                )
+                "-"
         }
+
+        for tf_name in TIMEFRAMES:
+
+            if tf_name not in tf_results:
+                continue
+
+            tf = tf_results[tf_name]
+
+            if tf["long"]:
+                result[tf_name] = "LONG"
+
+            elif tf["short"]:
+                result[tf_name] = "SHORT"
+
+        return result
 
     except Exception:
 
@@ -480,7 +417,7 @@ def format_price(value):
 # TRADINGVIEW SYMBOL
 # =========================================================
 
-def get_tradingview_symbol(inst_id):
+def tradingview_symbol(inst_id):
 
     pair = inst_id.replace(
         "-SWAP",
@@ -492,23 +429,20 @@ def get_tradingview_symbol(inst_id):
         ""
     )
 
-    return f"OKX:{pair}.P"
+    return "OKX:" + pair + ".P"
 
 
 # =========================================================
-# TRADINGVIEW OFFICIAL CHART
+# TRADINGVIEW
 # =========================================================
 
-def show_tradingview_chart(
-    inst_id,
-    timeframe
-):
+def show_chart(inst_id, timeframe):
 
-    tv_symbol = get_tradingview_symbol(
+    symbol = tradingview_symbol(
         inst_id
     )
 
-    tv_interval = {
+    interval = {
         "15M": "15",
         "30M": "30",
         "1H": "60"
@@ -517,14 +451,10 @@ def show_tradingview_chart(
         "15"
     )
 
-    chart_html = f"""
-    <!DOCTYPE html>
-
+    html = f"""
     <html>
 
     <head>
-
-        <meta charset="UTF-8">
 
         <style>
 
@@ -534,8 +464,8 @@ def show_tradingview_chart(
                 padding: 0;
                 width: 100%;
                 height: 100%;
-                overflow: hidden;
                 background: #131722;
+                overflow: hidden;
             }}
 
             .tradingview-widget-container {{
@@ -569,16 +499,16 @@ def show_tradingview_chart(
             >
             {{
                 "autosize": true,
-                "symbol": "{tv_symbol}",
-                "interval": "{tv_interval}",
+                "symbol": "{symbol}",
+                "interval": "{interval}",
                 "timezone": "Asia/Jakarta",
                 "theme": "dark",
                 "style": "1",
                 "locale": "en",
                 "enable_publishing": false,
+                "allow_symbol_change": false,
                 "hide_top_toolbar": false,
                 "hide_legend": false,
-                "allow_symbol_change": false,
                 "save_image": false,
                 "calendar": false,
                 "support_host": "https://www.tradingview.com"
@@ -593,7 +523,7 @@ def show_tradingview_chart(
     """
 
     components.html(
-        chart_html,
+        html,
         height=600,
         scrolling=False
     )
@@ -603,15 +533,15 @@ def show_tradingview_chart(
 # SESSION STATE
 # =========================================================
 
-if "scan_results" not in st.session_state:
-    st.session_state.scan_results = []
+if "results" not in st.session_state:
+    st.session_state.results = []
 
-if "scan_done" not in st.session_state:
-    st.session_state.scan_done = False
+if "scanned" not in st.session_state:
+    st.session_state.scanned = False
 
 
 # =========================================================
-# LOAD MARKET
+# MARKET
 # =========================================================
 
 try:
@@ -621,7 +551,7 @@ try:
 except Exception as e:
 
     st.error(
-        "❌ Gagal mengambil data market."
+        "Data market gagal diambil."
     )
 
     st.code(str(e))
@@ -633,40 +563,27 @@ except Exception as e:
 # SIDEBAR
 # =========================================================
 
-st.sidebar.header("⚙️ Scanner")
+st.sidebar.header("Scanner")
 
 scan_limit = st.sidebar.selectbox(
     "Jumlah pair",
-    [
-        20,
-        50,
-        100,
-        200,
-        300,
-        400
-    ],
+    [20, 50, 100, 200, 300, 400],
     index=2
 )
 
 st.sidebar.caption(
-    f"{len(symbols)} pair USDT tersedia"
-)
-
-st.sidebar.caption(
-    "15M • 30M • 1H"
+    "Timeframe: 15M • 30M • 1H"
 )
 
 
 # =========================================================
-# SCAN
+# SCAN BUTTON
 # =========================================================
 
 if st.button(
-    "🔎 SCAN MARKET",
+    "SCAN MARKET",
     use_container_width=True
 ):
-
-    scan_symbols = symbols[:scan_limit]
 
     results = []
 
@@ -674,50 +591,66 @@ if st.button(
 
     status = st.empty()
 
-    total = len(scan_symbols)
+    selected_symbols = symbols[:scan_limit]
 
-    for i, symbol in enumerate(
-        scan_symbols
+    total = len(selected_symbols)
+
+    for index, symbol in enumerate(
+        selected_symbols
     ):
 
         status.write(
-            f"Scanning "
-            f"{symbol.replace('-SWAP', '')} "
-            f"({i + 1}/{total})"
+            "Scanning "
+            + symbol.replace("-SWAP", "")
+            + " "
+            + str(index + 1)
+            + "/"
+            + str(total)
         )
 
         result = analyze_pair(
             symbol
         )
 
-        if result:
-            results.append(result)
+        if result is not None:
+
+            # Hanya simpan pair yang
+            # mempunyai signal
+
+            if (
+                result["long_count"] > 0
+                or
+                result["short_count"] > 0
+            ):
+
+                results.append(result)
 
         progress.progress(
-            (i + 1) / total
+            (index + 1) / total
         )
 
-        time.sleep(0.05)
+        time.sleep(0.03)
 
     progress.empty()
     status.empty()
 
-    st.session_state.scan_results = results
-    st.session_state.scan_done = True
+    st.session_state.results = results
+
+    st.session_state.scanned = True
 
 
 # =========================================================
-# MATCHING SYSTEM
+# DISPLAY RESULTS
 # =========================================================
 
-if st.session_state.scan_done:
+if st.session_state.scanned:
 
-    results = st.session_state.scan_results
+    results = st.session_state.results
 
     if not results:
 
         st.warning(
-            "Tidak ada data market yang berhasil dianalisis."
+            "Tidak ditemukan signal."
         )
 
         st.stop()
@@ -726,111 +659,98 @@ if st.session_state.scan_done:
 
 
     # =====================================================
-    # SEPARATE LONG / SHORT
+    # BUILD MATCH OPTIONS
     # =====================================================
 
-    long_df = df[
-        df["Long TF"] > 0
+    match_options = []
+
+    match_data = {}
+
+    # LONG OPTIONS
+
+    long_results = df[
+        df["long_count"] > 0
     ].copy()
 
-    short_df = df[
-        df["Short TF"] > 0
-    ].copy()
-
-
-    long_df = long_df.sort_values(
-        by="Long TF",
+    long_results = long_results.sort_values(
+        by="long_count",
         ascending=False
     )
 
-    short_df = short_df.sort_values(
-        by="Short TF",
+    for _, row in long_results.iterrows():
+
+        label = (
+            "🟢 LONG • "
+            + row["pair"]
+            + " • "
+            + str(int(row["long_count"]))
+            + "/3"
+        )
+
+        match_options.append(label)
+
+        match_data[label] = {
+            "signal": "LONG",
+            "row": row
+        }
+
+
+    # SHORT OPTIONS
+
+    short_results = df[
+        df["short_count"] > 0
+    ].copy()
+
+    short_results = short_results.sort_values(
+        by="short_count",
         ascending=False
     )
 
+    for _, row in short_results.iterrows():
+
+        label = (
+            "🔴 SHORT • "
+            + row["pair"]
+            + " • "
+            + str(int(row["short_count"]))
+            + "/3"
+        )
+
+        match_options.append(label)
+
+        match_data[label] = {
+            "signal": "SHORT",
+            "row": row
+        }
+
 
     # =====================================================
-    # MATCHING SELECTOR
+    # MATCH CHART
     # =====================================================
 
     st.divider()
 
-    st.header(
-        "🎯 Trade Setup"
+    st.header("🎯 Match Chart")
+
+    selected_match = st.selectbox(
+        "Pilih hasil scanner",
+        match_options
     )
 
-    signal_options = []
+    selected = match_data[
+        selected_match
+    ]
 
-    if len(long_df) > 0:
-        signal_options.append(
-            "LONG"
-        )
+    signal = selected["signal"]
 
-    if len(short_df) > 0:
-        signal_options.append(
-            "SHORT"
-        )
-
-    if not signal_options:
-
-        st.info(
-            "Belum ada signal LONG atau SHORT."
-        )
-
-        st.stop()
-
-
-    selected_signal = st.radio(
-        "Pilih signal",
-        signal_options,
-        horizontal=True
-    )
+    row = selected["row"]
 
 
     # =====================================================
-    # SELECT DATASET
+    # TIMEFRAME
     # =====================================================
 
-    if selected_signal == "LONG":
-
-        selected_df = long_df
-
-    else:
-
-        selected_df = short_df
-
-
-    # =====================================================
-    # PAIR OPTIONS
-    # =====================================================
-
-    pair_options = (
-        selected_df["Coin"]
-        .tolist()
-    )
-
-
-    selected_pair = st.selectbox(
-        f"Pilih pair {selected_signal}",
-        pair_options
-    )
-
-
-    # =====================================================
-    # GET SELECTED RESULT
-    # =====================================================
-
-    selected_row = selected_df[
-        selected_df["Coin"]
-        == selected_pair
-    ].iloc[0]
-
-
-    # =====================================================
-    # TIMEFRAME CHART
-    # =====================================================
-
-    chart_tf = st.selectbox(
+    chart_timeframe = st.selectbox(
         "Timeframe TradingView",
         [
             "15M",
@@ -841,31 +761,31 @@ if st.session_state.scan_done:
 
 
     # =====================================================
-    # SELECTED SETUP
+    # SETUP
     # =====================================================
 
     st.divider()
 
 
-    if selected_signal == "LONG":
+    if signal == "LONG":
 
         st.success(
             f"""
 🟢 **OUTLOOK LONG**
 
-### {selected_row["Coin"]}
+### {row["pair"]}
 
 **Outlook Long**
 
-`{format_price(selected_row["Long Entry Low"])} - {format_price(selected_row["Long Entry High"])}`
+`{format_price(row["long_entry_low"])} - {format_price(row["long_entry_high"])}`
 
 **Take Profit**
 
-`{format_price(selected_row["Long TP"])}`
+`{format_price(row["long_tp"])}`
 
 **Konfirmasi**
 
-{int(selected_row["Long TF"])}/3 timeframe
+{int(row["long_count"])}/3 timeframe
 """
         )
 
@@ -875,19 +795,19 @@ if st.session_state.scan_done:
             f"""
 🔴 **OUTLOOK SHORT**
 
-### {selected_row["Coin"]}
+### {row["pair"]}
 
 **Outlook Short**
 
-`{format_price(selected_row["Short Entry Low"])} - {format_price(selected_row["Short Entry High"])}`
+`{format_price(row["short_entry_low"])} - {format_price(row["short_entry_high"])}`
 
 **Take Profit**
 
-`{format_price(selected_row["Short TP"])}`
+`{format_price(row["short_tp"])}`
 
 **Konfirmasi**
 
-{int(selected_row["Short TF"])}/3 timeframe
+{int(row["short_count"])}/3 timeframe
 """
         )
 
@@ -898,71 +818,69 @@ if st.session_state.scan_done:
 
     st.divider()
 
-    st.header(
-        "📈 TradingView"
-    )
+    st.header("📈 Live Chart")
 
     st.caption(
-        f"{selected_pair} • {selected_signal} • {chart_tf}"
+        row["pair"]
+        + " • "
+        + signal
+        + " • "
+        + chart_timeframe
     )
 
-    selected_inst_id = selected_row[
-        "InstID"
-    ]
-
-    show_tradingview_chart(
-        selected_inst_id,
-        chart_tf
+    show_chart(
+        row["inst_id"],
+        chart_timeframe
     )
 
 
     # =====================================================
-    # LONG CANDIDATES
+    # ALL LONG
     # =====================================================
 
     st.divider()
 
     st.subheader(
-        "🟢 LONG CANDIDATES"
+        "🟢 Semua Outlook Long"
     )
 
-    if len(long_df) > 0:
+    if len(long_results) > 0:
 
-        display_long = pd.DataFrame({
+        long_display = []
 
-            "Pair":
-                long_df["Coin"],
+        for _, item in long_results.iterrows():
 
-            "Outlook Long":
-                long_df.apply(
-                    lambda row:
+            long_display.append({
+                "Pair":
+                    item["pair"],
+
+                "Outlook":
                     (
-                        f"{format_price(row['Long Entry Low'])}"
-                        f" - "
-                        f"{format_price(row['Long Entry High'])}"
+                        format_price(
+                            item["long_entry_low"]
+                        )
+                        + " - "
+                        + format_price(
+                            item["long_entry_high"]
+                        )
                     ),
-                    axis=1
-                ),
 
-            "Take Profit":
-                long_df[
-                    "Long TP"
-                ].apply(
-                    format_price
-                ),
+                "Take Profit":
+                    format_price(
+                        item["long_tp"]
+                    ),
 
-            "Confirm":
-                (
-                    long_df[
-                        "Long TF"
-                    ]
-                    .astype(str)
+                "Confirm":
+                    str(
+                        int(
+                            item["long_count"]
+                        )
+                    )
                     + "/3"
-                )
-        })
+            })
 
         st.dataframe(
-            display_long.head(30),
+            pd.DataFrame(long_display),
             use_container_width=True,
             hide_index=True
         )
@@ -970,30 +888,126 @@ if st.session_state.scan_done:
     else:
 
         st.write(
-            "Tidak ada kandidat LONG."
+            "Tidak ada Outlook Long."
         )
 
 
     # =====================================================
-    # SHORT CANDIDATES
+    # ALL SHORT
     # =====================================================
 
     st.subheader(
-        "🔴 SHORT CANDIDATES"
+        "🔴 Semua Outlook Short"
     )
 
-    if len(short_df) > 0:
+    if len(short_results) > 0:
 
-        display_short = pd.DataFrame({
+        short_display = []
 
-            "Pair":
-                short_df["Coin"],
+        for _, item in short_results.iterrows():
 
-            "Outlook Short":
-                short_df.apply(
-                    lambda row:
+            short_display.append({
+                "Pair":
+                    item["pair"],
+
+                "Outlook":
                     (
-                        f"{format_price(row['Short Entry Low'])}"
-                        f" - "
-                        f"{format_price(row['Short Entry High'])}"
-)
+                        format_price(
+                            item["short_entry_low"]
+                        )
+                        + " - "
+                        + format_price(
+                            item["short_entry_high"]
+                        )
+                    ),
+
+                "Take Profit":
+                    format_price(
+                        item["short_tp"]
+                    ),
+
+                "Confirm":
+                    str(
+                        int(
+                            item["short_count"]
+                        )
+                    )
+                    + "/3"
+            })
+
+        st.dataframe(
+            pd.DataFrame(short_display),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    else:
+
+        st.write(
+            "Tidak ada Outlook Short."
+        )
+
+
+    # =====================================================
+    # DETAIL
+    # =====================================================
+
+    with st.expander(
+        "📊 Detail scanner"
+    ):
+
+        detail = []
+
+        for _, item in df.iterrows():
+
+            detail.append({
+                "Pair":
+                    item["pair"],
+
+                "15M":
+                    item["15M"],
+
+                "30M":
+                    item["30M"],
+
+                "1H":
+                    item["1H"],
+
+                "Long":
+                    str(
+                        int(
+                            item["long_count"]
+                        )
+                    )
+                    + "/3",
+
+                "Short":
+                    str(
+                        int(
+                            item["short_count"]
+                        )
+                    )
+                    + "/3",
+
+                "Price":
+                    format_price(
+                        item["price"]
+                    )
+            })
+
+        st.dataframe(
+            pd.DataFrame(detail),
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.divider()
+
+st.caption(
+    "Signal bersifat teknikal dan bukan jaminan profit. DYOR."
+    )
