@@ -11,15 +11,22 @@ from datetime import datetime, timedelta, timezone
 # =========================================================
 
 st.set_page_config(
-    page_title="Binance BB Screener",
-    page_icon="📊",
+    page_title="Haiii 0xmwY",
+    page_icon="👋",
     layout="wide"
 )
 
-BB_PERIOD = 20
-BB_STD = 2
+BASE_URL = "https://data.binance.vision"
+
+TIMEFRAMES = {
+    "5 menit": "5m",
+    "15 menit": "15m",
+    "30 menit": "30m",
+    "1 jam": "1h"
+}
+
+PERIOD = 200
 REQUIRED_CANDLES = 3
-INTERVAL = "5m"
 
 
 # =========================================================
@@ -46,12 +53,12 @@ SYMBOLS = [
     "APTUSDT",
     "ARBUSDT",
     "OPUSDT",
-    "1000PEPEUSDT",
+    "1000PEPEUSDT"
 ]
 
 
 # =========================================================
-# CSS
+# STYLE
 # =========================================================
 
 st.markdown(
@@ -64,12 +71,13 @@ st.markdown(
     }
 
     .title {
-        font-size: 32px;
+        font-size: 34px;
         font-weight: 700;
     }
 
     .subtitle {
         color: #8b949e;
+        font-size: 15px;
     }
 
     </style>
@@ -83,44 +91,49 @@ st.markdown(
 # =========================================================
 
 st.markdown(
-    '<div class="title">📊 Binance BB Screener</div>',
+    '<div class="title">👋 Haiii 0xmwY</div>',
     unsafe_allow_html=True
 )
 
 st.markdown(
     '<div class="subtitle">'
-    'Binance Futures • 5m • Bollinger Bands 20/2'
+    'Binance Futures Screener'
     '</div>',
     unsafe_allow_html=True
 )
 
 st.divider()
 
-st.info(
-    "Signal = 3 candle 5m berturut-turut close "
-    "di luar Bollinger Bands."
+
+# =========================================================
+# TIMEFRAME SELECTOR
+# =========================================================
+
+selected_name = st.selectbox(
+    "Timeframe",
+    list(TIMEFRAMES.keys())
 )
 
-st.warning(
-    "Mode historical: data diambil dari Binance Data Vision, "
-    "bukan Binance Futures API live."
-)
+selected_interval = TIMEFRAMES[
+    selected_name
+]
 
 
 # =========================================================
-# DOWNLOAD HISTORICAL KLINES
+# DOWNLOAD DATA
 # =========================================================
 
 @st.cache_data(ttl=1800)
-def download_klines(symbol, date):
+def download_klines(symbol, interval, date):
 
-    date_string = date.strftime("%Y-%m-%d")
+    date_string = date.strftime(
+        "%Y-%m-%d"
+    )
 
     url = (
-        "https://data.binance.vision/"
-        "data/futures/um/daily/klines/"
-        f"{symbol}/{INTERVAL}/"
-        f"{symbol}-{INTERVAL}-{date_string}.zip"
+        f"{BASE_URL}/data/futures/um/daily/"
+        f"klines/{symbol}/{interval}/"
+        f"{symbol}-{interval}-{date_string}.zip"
     )
 
     try:
@@ -174,25 +187,11 @@ def download_klines(symbol, date):
         ]
 
         df = df.iloc[:, :12]
+
         df.columns = columns
 
         df["close"] = pd.to_numeric(
             df["close"],
-            errors="coerce"
-        )
-
-        df["open"] = pd.to_numeric(
-            df["open"],
-            errors="coerce"
-        )
-
-        df["high"] = pd.to_numeric(
-            df["high"],
-            errors="coerce"
-        )
-
-        df["low"] = pd.to_numeric(
-            df["low"],
             errors="coerce"
         )
 
@@ -203,6 +202,7 @@ def download_klines(symbol, date):
         return df
 
     except Exception:
+
         return None
 
 
@@ -210,121 +210,120 @@ def download_klines(symbol, date):
 # GET LATEST AVAILABLE DATA
 # =========================================================
 
-def get_latest_data(symbol):
+def get_latest_data(
+    symbol,
+    interval
+):
 
     today = datetime.now(
         timezone.utc
     ).date()
 
-    # Coba beberapa hari terakhir.
-    # Ini menghindari error kalau file hari terbaru
-    # belum tersedia.
-
-    for days_back in [1, 2, 3]:
+    for days_back in [
+        1,
+        2,
+        3,
+        4,
+        5
+    ]:
 
         target_date = (
-            today - timedelta(days=days_back)
+            today -
+            timedelta(days=days_back)
         )
 
         df = download_klines(
             symbol,
+            interval,
             target_date
         )
 
-        if df is not None and len(df) >= 30:
+        if (
+            df is not None
+            and len(df) >= PERIOD + REQUIRED_CANDLES
+        ):
+
             return df, target_date
 
     return None, None
 
 
 # =========================================================
-# BOLLINGER BANDS
+# CALCULATE INDICATOR
 # =========================================================
 
-def calculate_bb(df):
+def calculate_indicator(df):
 
     df = df.copy()
 
-    df["middle"] = (
+    df["indicator"] = (
         df["close"]
-        .rolling(BB_PERIOD)
+        .ewm(
+            span=PERIOD,
+            adjust=False
+        )
         .mean()
-    )
-
-    df["std"] = (
-        df["close"]
-        .rolling(BB_PERIOD)
-        .std(ddof=0)
-    )
-
-    df["upper"] = (
-        df["middle"]
-        + BB_STD * df["std"]
-    )
-
-    df["lower"] = (
-        df["middle"]
-        - BB_STD * df["std"]
     )
 
     return df
 
 
 # =========================================================
-# SIGNAL
+# DETECT SIGNAL
 # =========================================================
 
 def detect_signal(df):
 
-    df = calculate_bb(df)
+    if df is None:
+        return None
 
-    if len(df) < BB_PERIOD + REQUIRED_CANDLES:
+    df = calculate_indicator(df)
+
+    if len(df) < PERIOD + REQUIRED_CANDLES:
         return None
 
     recent = df.iloc[
         -REQUIRED_CANDLES:
     ]
 
-    # LONG
-    long_signal = (
-        recent["close"] <
-        recent["lower"]
+    above = (
+        recent["close"] >
+        recent["indicator"]
     ).all()
 
-    # SHORT
-    short_signal = (
-        recent["close"] >
-        recent["upper"]
+    below = (
+        recent["close"] <
+        recent["indicator"]
     ).all()
 
     last = df.iloc[-1]
 
-    if long_signal:
+    if above:
 
         return {
             "signal": "LONG",
-            "price": float(last["close"]),
-            "lower": float(last["lower"]),
-            "upper": float(last["upper"])
+            "price": float(
+                last["close"]
+            )
         }
 
-    if short_signal:
+    if below:
 
         return {
             "signal": "SHORT",
-            "price": float(last["close"]),
-            "lower": float(last["lower"]),
-            "upper": float(last["upper"])
+            "price": float(
+                last["close"]
+            )
         }
 
     return None
 
 
 # =========================================================
-# SCAN
+# SCAN MARKET
 # =========================================================
 
-def scan_market():
+def scan_market(interval):
 
     results = []
 
@@ -341,34 +340,41 @@ def scan_market():
         )
 
         df, data_date = get_latest_data(
-            symbol
+            symbol,
+            interval
         )
 
         if df is not None:
 
-            signal = detect_signal(df)
+            result = detect_signal(
+                df
+            )
 
-            if signal:
+            if result:
 
-                signal["symbol"] = symbol
-                signal["date"] = str(
+                result["symbol"] = symbol
+
+                result["date"] = str(
                     data_date
                 )
 
-                results.append(signal)
+                results.append(
+                    result
+                )
 
         progress.progress(
             (i + 1) / total
         )
 
-    status.empty()
     progress.empty()
+
+    status.empty()
 
     return results
 
 
 # =========================================================
-# BUTTON
+# SCAN BUTTON
 # =========================================================
 
 if st.button(
@@ -377,10 +383,12 @@ if st.button(
 ):
 
     with st.spinner(
-        "Scanning Binance historical data..."
+        "Scanning market..."
     ):
 
-        results = scan_market()
+        results = scan_market(
+            selected_interval
+        )
 
         st.session_state[
             "results"
@@ -436,8 +444,6 @@ if "results" in st.session_state:
                 [
                     "symbol",
                     "price",
-                    "lower",
-                    "upper",
                     "date"
                 ]
             ]
@@ -445,8 +451,6 @@ if "results" in st.session_state:
             df_long.columns = [
                 "Symbol",
                 "Price",
-                "Lower BB",
-                "Upper BB",
                 "Date"
             ]
 
@@ -483,8 +487,6 @@ if "results" in st.session_state:
                 [
                     "symbol",
                     "price",
-                    "lower",
-                    "upper",
                     "date"
                 ]
             ]
@@ -492,8 +494,6 @@ if "results" in st.session_state:
             df_short.columns = [
                 "Symbol",
                 "Price",
-                "Lower BB",
-                "Upper BB",
                 "Date"
             ]
 
@@ -516,13 +516,11 @@ if "results" in st.session_state:
 
 if "scan_time" in st.session_state:
 
-    scan_time = st.session_state[
-        "scan_time"
-    ]
-
     st.caption(
-        "Scanner run: "
-        + scan_time.strftime(
+        "Last scan: "
+        + st.session_state[
+            "scan_time"
+        ].strftime(
             "%Y-%m-%d %H:%M:%S UTC"
         )
     )
