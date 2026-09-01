@@ -1089,4 +1089,92 @@ SHORT
                 lambda row:
                 f"{format_price(row['LONG ENTRY LOW'])} "
                 f"→ "
-             
+                f"{format_price(row['LONG ENTRY HIGH'])}",
+                axis=1
+            ),
+
+        "Take Profit":
+            long_df[
+                "LONG TP"
+            ].apply(
+                format_price
+            ),
+
+        "TF":
+            long_df[
+                "LONG TF"
+            ].astype(str)
+            + "/4"
+    })
+
+    st.dataframe(
+        long_display,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # =====================================================
+    # SHORT CANDIDATES
+    # =====================================================
+
+    st.markdown(
+        "### 🔴 SHORT"
+    )
+
+    short_df = (
+        df
+        .sort_values(
+            by=[
+                "SHORT TF",
+                "SHORT SCORE"
+            ],
+            ascending=False
+        )
+        .head(10)
+        .copy()
+    )
+
+    short_display = pd.DataFrame({
+
+        "Coin":
+            short_df["Coin"],
+
+        "Target Entry":
+            short_df.apply(
+                lambda row:
+                f"{format_price(row['SHORT ENTRY LOW'])} "
+                f"→ "
+                f"{format_price(row['SHORT ENTRY HIGH'])}",
+                axis=1
+            ),
+
+        "Take Profit":
+            short_df[
+                "SHORT TP"
+            ].apply(
+                format_price
+            ),
+
+        "TF":
+            short_df[
+                "SHORT TF"
+            ].astype(str)
+            + "/4"
+    })
+
+    st.dataframe(
+        short_display,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # =====================================================
+    # LAST UPDATE
+    # =====================================================
+
+    st.divider()
+
+    st.caption(
+        "Setup dihitung dari data candle terbaru yang sudah close. "
+        "Entry dan TP menggunakan volatilitas ATR 5M."
+    )
