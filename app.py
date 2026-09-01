@@ -1,12 +1,11 @@
 import streamlit as st
 import requests
 import pandas as pd
-import time
 from datetime import datetime, timezone
 
-# =========================
+# =========================================================
 # CONFIG
-# =========================
+# =========================================================
 
 st.set_page_config(
     page_title="Haiii 0xmwY",
@@ -14,67 +13,60 @@ st.set_page_config(
     layout="wide"
 )
 
-API_KEY = st.secrets["937c265e51c344c79b71cd715bb928ba"]
+# API KEY
+API_KEY = "937c265e51c344c79b71cd715bb928ba"
+
 BASE_URL = "https://api.twelvedata.com"
+
+EMA_PERIOD = 200
 
 TIMEFRAMES = {
     "5 Menit": "5min",
     "15 Menit": "15min",
     "30 Menit": "30min",
-    "1 Jam": "1h",
+    "1 Jam": "1h"
 }
 
-EMA_PERIOD = 200
 
-
-# =========================
+# =========================================================
 # STYLE
-# =========================
+# =========================================================
 
 st.markdown("""
 <style>
 
-.title {
+.main-title {
     font-size: 42px;
     font-weight: 800;
 }
 
 .subtitle {
-    color: #8b949e;
     font-size: 18px;
+    color: #8b949e;
 }
 
-.signal-long {
+.long-box {
     background: #123d22;
     padding: 18px;
     border-radius: 12px;
-    margin-bottom: 10px;
 }
 
-.signal-short {
+.short-box {
     background: #4a1717;
     padding: 18px;
     border-radius: 12px;
-    margin-bottom: 10px;
-}
-
-.signal-neutral {
-    background: #22272e;
-    padding: 18px;
-    border-radius: 12px;
-    margin-bottom: 10px;
 }
 
 </style>
 """, unsafe_allow_html=True)
 
 
-# =========================
+# =========================================================
 # HEADER
-# =========================
+# =========================================================
 
 st.markdown(
-    '<div class="title">📊 Haiii 0xmwY</div>',
+    '<div class="main-title">📊 Haiii 0xmwY</div>',
     unsafe_allow_html=True
 )
 
@@ -86,21 +78,16 @@ st.markdown(
 st.divider()
 
 
-# =========================
-# FUNCTIONS
-# =========================
+# =========================================================
+# API REQUEST HELPER
+# =========================================================
 
-@st.cache_data(ttl=3600)
-def get_crypto_list():
+def api_get(endpoint, params):
 
-    url = f"{BASE_URL}/cryptocurrencies"
-
-    params = {
-        "apikey": API_KEY
-    }
+    params["apikey"] = API_KEY
 
     response = requests.get(
-        url,
+        f"{BASE_URL}{endpoint}",
         params=params,
         timeout=20
     )
@@ -109,11 +96,34 @@ def get_crypto_list():
 
     data = response.json()
 
-    if isinstance(data, dict) and "data" in data:
-        data = data["data"]
+    if isinstance(data, dict):
+        if data.get("status") == "error":
+            raise Exception(
+                data.get(
+                    "message",
+                    "Twelve Data API error"
+                )
+            )
+
+    return data
+
+
+# =========================================================
+# GET CRYPTO LIST
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def get_crypto_list():
+
+    data = api_get(
+        "/cryptocurrencies",
+        {}
+    )
 
     if not isinstance(data, list):
-        raise Exception("Format daftar crypto tidak dikenali.")
+
+        if isinstance(data, dict):
+            data = data.get("data", [])
 
     symbols = []
 
@@ -124,31 +134,32 @@ def get_crypto_list():
         if symbol:
             symbols.append(symbol)
 
-    return sorted(list(set(symbols)))
+    # Hanya pasangan USD
+    usd_symbols = [
+        x for x in symbols
+        if x.endswith("/USD")
+    ]
 
+    return sorted(
+        list(set(usd_symbols))
+    )
+
+
+# =========================================================
+# GET CANDLE
+# =========================================================
 
 @st.cache_data(ttl=30)
 def get_candles(symbol, interval):
 
-    url = f"{BASE_URL}/time_series"
-
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "outputsize": 220,
-        "apikey": API_KEY
-    }
-
-    response = requests.get(
-        url,
-        params=params,
-        timeout=20
+    data = api_get(
+        "/time_series",
+        {
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": 220
+        }
     )
-
-    data = response.json()
-
-    if isinstance(data, dict) and data.get("status") == "error":
-        return None
 
     values = data.get("values")
 
@@ -165,15 +176,20 @@ def get_candles(symbol, interval):
         errors="coerce"
     )
 
-    df = df.dropna(subset=["close"])
+    df = df.dropna(
+        subset=["close"]
+    )
 
     if len(df) < EMA_PERIOD:
         return None
 
-    # API mengembalikan candle terbaru di atas.
-    # Balik supaya urutan waktunya lama -> baru.
-    df = df.iloc[::-1].reset_index(drop=True)
+    # API biasanya mengirim terbaru -> terlama
+    # Kita balik menjadi terlama -> terbaru
+    df = df.iloc[::-1].reset_index(
+        drop=True
+    )
 
+    # EMA 200
     df["ema200"] = (
         df["close"]
         .ewm(
@@ -186,28 +202,47 @@ def get_candles(symbol, interval):
     return df
 
 
+# =========================================================
+# ANALYZE
+# =========================================================
+
 def analyze(symbol, interval):
 
-    df = get_candles(symbol, interval)
+    df = get_candles(
+        symbol,
+        interval
+    )
 
-    if df is None or df.empty:
+    if df is None:
         return None
 
-    last = df.iloc[-1]
+    if len(df) < 3:
+        return None
 
-    price = float(last["close"])
-    ema = float(last["ema200"])
-
+    current = df.iloc[-1]
     previous = df.iloc[-2]
 
-    previous_price = float(previous["close"])
-    previous_ema = float(previous["ema200"])
+    price = float(
+        current["close"]
+    )
+
+    ema = float(
+        current["ema200"]
+    )
+
+    previous_price = float(
+        previous["close"]
+    )
+
+    previous_ema = float(
+        previous["ema200"]
+    )
 
     signal = "NEUTRAL"
 
-    # =========================
+    # =====================================================
     # LONG
-    # =========================
+    # =====================================================
 
     if (
         price > ema
@@ -215,9 +250,9 @@ def analyze(symbol, interval):
     ):
         signal = "LONG"
 
-    # =========================
+    # =====================================================
     # SHORT
-    # =========================
+    # =====================================================
 
     elif (
         price < ema
@@ -225,20 +260,24 @@ def analyze(symbol, interval):
     ):
         signal = "SHORT"
 
-    distance = ((price - ema) / ema) * 100
+    distance = (
+        (price - ema)
+        / ema
+        * 100
+    )
 
     return {
         "Symbol": symbol,
         "Price": price,
-        "EMA": ema,
+        "EMA200": ema,
         "Distance %": distance,
         "Signal": signal
     }
 
 
-# =========================
+# =========================================================
 # CONTROLS
-# =========================
+# =========================================================
 
 col1, col2 = st.columns(2)
 
@@ -252,25 +291,33 @@ with col1:
 with col2:
 
     max_coins = st.selectbox(
-        "Jumlah coin",
+        "Jumlah coin yang discan",
         [10, 25, 50, 100],
         index=0
     )
 
 
-interval = TIMEFRAMES[timeframe_name]
+interval = TIMEFRAMES[
+    timeframe_name
+]
 
 
-# =========================
-# SCAN
-# =========================
+# =========================================================
+# SCAN BUTTON
+# =========================================================
 
 if st.button(
     "🔄 SCAN MARKET",
     use_container_width=True
 ):
 
-    with st.spinner("Mengambil daftar crypto..."):
+    # -----------------------------------------------------
+    # GET SYMBOLS
+    # -----------------------------------------------------
+
+    with st.spinner(
+        "Mengambil daftar cryptocurrency..."
+    ):
 
         try:
 
@@ -286,11 +333,15 @@ if st.button(
 
     if not symbols:
 
-        st.error("Daftar coin kosong.")
+        st.error(
+            "Tidak ada cryptocurrency yang ditemukan."
+        )
+
         st.stop()
 
-    # Batasi dahulu supaya API tidak langsung
-    # menghabiskan banyak credit.
+    # -----------------------------------------------------
+    # LIMIT SCAN
+    # -----------------------------------------------------
 
     symbols = symbols[:max_coins]
 
@@ -302,11 +353,15 @@ if st.button(
 
     total = len(symbols)
 
-    for i, symbol in enumerate(symbols):
+    # -----------------------------------------------------
+    # SCAN
+    # -----------------------------------------------------
 
-        status.text(
+    for index, symbol in enumerate(symbols):
+
+        status.write(
             f"Scanning {symbol} "
-            f"({i + 1}/{total})"
+            f"({index + 1}/{total})"
         )
 
         try:
@@ -316,21 +371,22 @@ if st.button(
                 interval
             )
 
-            if result:
+            if result is not None:
                 results.append(result)
 
         except Exception:
             pass
 
         progress.progress(
-            (i + 1) / total
+            (index + 1) / total
         )
-
-        # Sedikit jeda agar tidak terlalu agresif
-        time.sleep(0.15)
 
     progress.empty()
     status.empty()
+
+    # -----------------------------------------------------
+    # NO DATA
+    # -----------------------------------------------------
 
     if not results:
 
@@ -340,11 +396,19 @@ if st.button(
 
         st.stop()
 
+    # -----------------------------------------------------
+    # DATAFRAME
+    # -----------------------------------------------------
+
     df = pd.DataFrame(results)
 
-    # =========================
-    # SIGNAL FILTER
-    # =========================
+    df["Price"] = df["Price"].round(8)
+    df["EMA200"] = df["EMA200"].round(8)
+    df["Distance %"] = df["Distance %"].round(3)
+
+    # -----------------------------------------------------
+    # SIGNALS
+    # -----------------------------------------------------
 
     long_df = df[
         df["Signal"] == "LONG"
@@ -354,23 +418,14 @@ if st.button(
         df["Signal"] == "SHORT"
     ].copy()
 
-    # Urut berdasarkan jarak dari EMA
-    long_df["Distance %"] = (
-        long_df["Distance %"].round(3)
-    )
-
-    short_df["Distance %"] = (
-        short_df["Distance %"].round(3)
-    )
-
-    # =========================
-    # RESULTS
-    # =========================
+    # =====================================================
+    # SUMMARY
+    # =====================================================
 
     st.divider()
 
     st.subheader(
-        f"Market Scan • {timeframe_name}"
+        f"Market Scan — {timeframe_name}"
     )
 
     col1, col2 = st.columns(2)
@@ -379,9 +434,9 @@ if st.button(
 
         st.markdown(
             f"""
-            <div class="signal-long">
-            <h2>🟢 LONG</h2>
-            <h3>{len(long_df)} signal</h3>
+            <div class="long-box">
+                <h2>🟢 LONG</h2>
+                <h3>{len(long_df)} signal</h3>
             </div>
             """,
             unsafe_allow_html=True
@@ -391,17 +446,17 @@ if st.button(
 
         st.markdown(
             f"""
-            <div class="signal-short">
-            <h2>🔴 SHORT</h2>
-            <h3>{len(short_df)} signal</h3>
+            <div class="short-box">
+                <h2>🔴 SHORT</h2>
+                <h3>{len(short_df)} signal</h3>
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    # =========================
-    # LONG TABLE
-    # =========================
+    # =====================================================
+    # LONG
+    # =====================================================
 
     st.subheader("🟢 LONG")
 
@@ -418,7 +473,7 @@ if st.button(
                 [
                     "Symbol",
                     "Price",
-                    "EMA",
+                    "EMA200",
                     "Distance %",
                     "Signal"
                 ]
@@ -427,9 +482,9 @@ if st.button(
             hide_index=True
         )
 
-    # =========================
-    # SHORT TABLE
-    # =========================
+    # =====================================================
+    # SHORT
+    # =====================================================
 
     st.subheader("🔴 SHORT")
 
@@ -446,7 +501,7 @@ if st.button(
                 [
                     "Symbol",
                     "Price",
-                    "EMA",
+                    "EMA200",
                     "Distance %",
                     "Signal"
                 ]
@@ -455,9 +510,31 @@ if st.button(
             hide_index=True
         )
 
-    # =========================
+    # =====================================================
+    # ALL RESULTS
+    # =====================================================
+
+    with st.expander(
+        "📋 Lihat semua hasil scan"
+    ):
+
+        st.dataframe(
+            df[
+                [
+                    "Symbol",
+                    "Price",
+                    "EMA200",
+                    "Distance %",
+                    "Signal"
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # =====================================================
     # TIME
-    # =========================
+    # =====================================================
 
     now = datetime.now(
         timezone.utc
@@ -467,4 +544,4 @@ if st.button(
 
     st.caption(
         f"Scanner run: {now}"
-    )
+            )
