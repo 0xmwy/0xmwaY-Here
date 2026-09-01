@@ -4,6 +4,7 @@ import requests
 import zipfile
 import io
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # =========================================================
@@ -16,45 +17,20 @@ st.set_page_config(
     layout="wide"
 )
 
-BASE_URL = "https://data.binance.vision"
+DATA_URL = "https://data.binance.vision"
+
+EMA_TREND = 200
+EMA_FAST = 9
+EMA_SLOW = 21
+RSI_PERIOD = 14
 
 TIMEFRAMES = {
-    "5 menit": "5m",
-    "15 menit": "15m",
-    "30 menit": "30m",
-    "1 jam": "1h"
+    "5m": "5m",
+    "15m": "15m",
+    "1H": "1h"
 }
 
-PERIOD = 200
-REQUIRED_CANDLES = 3
-
-
-# =========================================================
-# SYMBOLS
-# =========================================================
-
-SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "DOGEUSDT",
-    "ADAUSDT",
-    "AVAXUSDT",
-    "LINKUSDT",
-    "SUIUSDT",
-    "TRXUSDT",
-    "LTCUSDT",
-    "BCHUSDT",
-    "DOTUSDT",
-    "UNIUSDT",
-    "NEARUSDT",
-    "APTUSDT",
-    "ARBUSDT",
-    "OPUSDT",
-    "1000PEPEUSDT"
-]
+MAX_WORKERS = 8
 
 
 # =========================================================
@@ -64,7 +40,6 @@ SYMBOLS = [
 st.markdown(
     """
     <style>
-
     .block-container {
         padding-top: 2rem;
         max-width: 1200px;
@@ -79,7 +54,6 @@ st.markdown(
         color: #8b949e;
         font-size: 15px;
     }
-
     </style>
     """,
     unsafe_allow_html=True
@@ -96,9 +70,7 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="subtitle">'
-    'Binance Futures Screener'
-    '</div>',
+    '<div class="subtitle">Scalping Market Screener</div>',
     unsafe_allow_html=True
 )
 
@@ -106,32 +78,126 @@ st.divider()
 
 
 # =========================================================
-# TIMEFRAME SELECTOR
+# CONTROLS
 # =========================================================
 
-selected_name = st.selectbox(
-    "Timeframe",
-    list(TIMEFRAMES.keys())
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    direction = st.selectbox(
+        "Signal",
+        ["ALL", "LONG", "SHORT"]
+    )
+
+with col2:
+    min_score = st.selectbox(
+        "Minimum Score",
+        [3, 4, 5],
+        index=0
+    )
+
+with col3:
+    max_results = st.selectbox(
+        "Tampilkan",
+        [20, 50, 100, 200],
+        index=1
+    )
+
+st.caption(
+    "Semua USDT-M perpetual • 1H + 15m trend • 5m momentum"
 )
 
-selected_interval = TIMEFRAMES[
-    selected_name
-]
+
+# =========================================================
+# HTTP SESSION
+# =========================================================
+
+session = requests.Session()
+
+session.headers.update({
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json"
+})
 
 
 # =========================================================
-# DOWNLOAD DATA
+# GET ALL SYMBOLS
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def get_all_symbols():
+
+    # Kita coba beberapa endpoint metadata Binance.
+    # Ini hanya untuk mendapatkan daftar pair.
+    urls = [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://fapi1.binance.com/fapi/v1/exchangeInfo",
+        "https://fapi2.binance.com/fapi/v1/exchangeInfo",
+        "https://fapi3.binance.com/fapi/v1/exchangeInfo",
+        "https://fapi4.binance.com/fapi/v1/exchangeInfo"
+    ]
+
+    for url in urls:
+
+        try:
+
+            response = session.get(
+                url,
+                timeout=15
+            )
+
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+
+            symbols = []
+
+            for item in data.get(
+                "symbols",
+                []
+            ):
+
+                if (
+                    item.get("status") == "TRADING"
+                    and item.get("contractType")
+                    == "PERPETUAL"
+                    and item.get("quoteAsset")
+                    == "USDT"
+                ):
+
+                    symbols.append(
+                        item["symbol"]
+                    )
+
+            if symbols:
+                return sorted(
+                    list(set(symbols))
+                )
+
+        except Exception:
+            continue
+
+    return []
+
+
+# =========================================================
+# DOWNLOAD HISTORICAL KLINES
 # =========================================================
 
 @st.cache_data(ttl=1800)
-def download_klines(symbol, interval, date):
+def download_klines(
+    symbol,
+    interval,
+    date
+):
 
     date_string = date.strftime(
         "%Y-%m-%d"
     )
 
     url = (
-        f"{BASE_URL}/data/futures/um/daily/"
+        f"{DATA_URL}/data/futures/um/daily/"
         f"klines/{symbol}/{interval}/"
         f"{symbol}-{interval}-{date_string}.zip"
     )
@@ -190,13 +256,24 @@ def download_klines(symbol, interval, date):
 
         df.columns = columns
 
-        df["close"] = pd.to_numeric(
-            df["close"],
-            errors="coerce"
-        )
+        for column in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]:
+
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
 
         df = df.dropna(
-            subset=["close"]
+            subset=[
+                "close",
+                "volume"
+            ]
         )
 
         return df
@@ -210,7 +287,7 @@ def download_klines(symbol, interval, date):
 # GET LATEST AVAILABLE DATA
 # =========================================================
 
-def get_latest_data(
+def get_data(
     symbol,
     interval
 ):
@@ -219,13 +296,7 @@ def get_latest_data(
         timezone.utc
     ).date()
 
-    for days_back in [
-        1,
-        2,
-        3,
-        4,
-        5
-    ]:
+    for days_back in range(1, 8):
 
         target_date = (
             today -
@@ -240,28 +311,95 @@ def get_latest_data(
 
         if (
             df is not None
-            and len(df) >= PERIOD + REQUIRED_CANDLES
+            and len(df)
+            >= EMA_TREND + 30
         ):
 
-            return df, target_date
+            return df
 
-    return None, None
+    return None
 
 
 # =========================================================
-# CALCULATE INDICATOR
+# INDICATORS
 # =========================================================
 
-def calculate_indicator(df):
+def add_indicators(df):
 
     df = df.copy()
 
-    df["indicator"] = (
+    # Trend
+    df["ema200"] = (
         df["close"]
         .ewm(
-            span=PERIOD,
+            span=EMA_TREND,
             adjust=False
         )
+        .mean()
+    )
+
+    # Momentum
+    df["ema9"] = (
+        df["close"]
+        .ewm(
+            span=EMA_FAST,
+            adjust=False
+        )
+        .mean()
+    )
+
+    df["ema21"] = (
+        df["close"]
+        .ewm(
+            span=EMA_SLOW,
+            adjust=False
+        )
+        .mean()
+    )
+
+    # RSI
+    delta = df["close"].diff()
+
+    gain = delta.clip(
+        lower=0
+    )
+
+    loss = -delta.clip(
+        upper=0
+    )
+
+    avg_gain = (
+        gain
+        .rolling(RSI_PERIOD)
+        .mean()
+    )
+
+    avg_loss = (
+        loss
+        .rolling(RSI_PERIOD)
+        .mean()
+    )
+
+    rs = (
+        avg_gain /
+        avg_loss.replace(
+            0,
+            pd.NA
+        )
+    )
+
+    df["rsi"] = (
+        100 -
+        (
+            100 /
+            (1 + rs)
+        )
+    )
+
+    # Volume
+    df["volume_avg"] = (
+        df["volume"]
+        .rolling(20)
         .mean()
     )
 
@@ -269,61 +407,158 @@ def calculate_indicator(df):
 
 
 # =========================================================
-# DETECT SIGNAL
+# ANALYZE SYMBOL
 # =========================================================
 
-def detect_signal(df):
+def analyze_symbol(symbol):
 
-    if df is None:
-        return None
+    try:
 
-    df = calculate_indicator(df)
+        data_1h = get_data(
+            symbol,
+            "1h"
+        )
 
-    if len(df) < PERIOD + REQUIRED_CANDLES:
-        return None
+        data_15m = get_data(
+            symbol,
+            "15m"
+        )
 
-    recent = df.iloc[
-        -REQUIRED_CANDLES:
-    ]
+        data_5m = get_data(
+            symbol,
+            "5m"
+        )
 
-    above = (
-        recent["close"] >
-        recent["indicator"]
-    ).all()
+        if (
+            data_1h is None
+            or data_15m is None
+            or data_5m is None
+        ):
+            return None
 
-    below = (
-        recent["close"] <
-        recent["indicator"]
-    ).all()
+        data_1h = add_indicators(
+            data_1h
+        )
 
-    last = df.iloc[-1]
+        data_15m = add_indicators(
+            data_15m
+        )
 
-    if above:
+        data_5m = add_indicators(
+            data_5m
+        )
+
+        h1 = data_1h.iloc[-1]
+        m15 = data_15m.iloc[-1]
+        m5 = data_5m.iloc[-1]
+
+        # =================================================
+        # SHORT SCORE
+        # =================================================
+
+        short_score = 0
+
+        if h1["close"] < h1["ema200"]:
+            short_score += 1
+
+        if m15["close"] < m15["ema200"]:
+            short_score += 1
+
+        if m5["ema9"] < m5["ema21"]:
+            short_score += 1
+
+        if m5["rsi"] < 50:
+            short_score += 1
+
+        if m5["volume"] > m5["volume_avg"]:
+            short_score += 1
+
+
+        # =================================================
+        # LONG SCORE
+        # =================================================
+
+        long_score = 0
+
+        if h1["close"] > h1["ema200"]:
+            long_score += 1
+
+        if m15["close"] > m15["ema200"]:
+            long_score += 1
+
+        if m5["ema9"] > m5["ema21"]:
+            long_score += 1
+
+        if m5["rsi"] > 50:
+            long_score += 1
+
+        if m5["volume"] > m5["volume_avg"]:
+            long_score += 1
+
+
+        # =================================================
+        # SIGNAL
+        # =================================================
+
+        if (
+            direction in ["ALL", "SHORT"]
+            and short_score >= min_score
+        ):
+
+            signal = "SHORT"
+            score = short_score
+
+        elif (
+            direction in ["ALL", "LONG"]
+            and long_score >= min_score
+        ):
+
+            signal = "LONG"
+            score = long_score
+
+        else:
+
+            return None
+
+
+        # =================================================
+        # STRENGTH
+        # =================================================
+
+        if score == 5:
+            strength = "STRONG"
+
+        elif score == 4:
+            strength = "GOOD"
+
+        else:
+            strength = "WATCH"
+
 
         return {
-            "signal": "LONG",
-            "price": float(
-                last["close"]
+            "Symbol": symbol,
+            "Signal": signal,
+            "Score": f"{score}/5",
+            "Strength": strength,
+            "Price": float(
+                m5["close"]
+            ),
+            "RSI": round(
+                float(m5["rsi"]),
+                2
             )
         }
 
-    if below:
+    except Exception:
 
-        return {
-            "signal": "SHORT",
-            "price": float(
-                last["close"]
-            )
-        }
-
-    return None
+        return None
 
 
 # =========================================================
-# SCAN MARKET
+# SCAN ALL MARKET
 # =========================================================
 
-def scan_market(interval):
+def scan_market(symbols):
 
     results = []
 
@@ -331,74 +566,101 @@ def scan_market(interval):
 
     status = st.empty()
 
-    total = len(SYMBOLS)
+    total = len(symbols)
 
-    for i, symbol in enumerate(SYMBOLS):
+    completed = 0
 
-        status.write(
-            f"Scanning {symbol}..."
-        )
+    with ThreadPoolExecutor(
+        max_workers=MAX_WORKERS
+    ) as executor:
 
-        df, data_date = get_latest_data(
-            symbol,
-            interval
-        )
+        futures = {
+            executor.submit(
+                analyze_symbol,
+                symbol
+            ): symbol
+            for symbol in symbols
+        }
 
-        if df is not None:
+        for future in as_completed(
+            futures
+        ):
 
-            result = detect_signal(
-                df
+            try:
+
+                result = future.result()
+
+                if result is not None:
+                    results.append(
+                        result
+                    )
+
+            except Exception:
+                pass
+
+            completed += 1
+
+            progress.progress(
+                completed / total
             )
 
-            if result:
-
-                result["symbol"] = symbol
-
-                result["date"] = str(
-                    data_date
-                )
-
-                results.append(
-                    result
-                )
-
-        progress.progress(
-            (i + 1) / total
-        )
+            status.write(
+                f"Scanning "
+                f"{completed}/{total} coins..."
+            )
 
     progress.empty()
-
     status.empty()
 
     return results
 
 
 # =========================================================
-# SCAN BUTTON
+# BUTTON
 # =========================================================
 
 if st.button(
-    "🔄 SCAN MARKET",
+    "🔄 SCAN ALL BINANCE",
     use_container_width=True
 ):
 
     with st.spinner(
-        "Scanning market..."
+        "Mengambil semua pair Binance Futures..."
     ):
 
-        results = scan_market(
-            selected_interval
-        )
+        symbols = get_all_symbols()
 
-        st.session_state[
-            "results"
-        ] = results
+        if not symbols:
 
-        st.session_state[
-            "scan_time"
-        ] = datetime.now(
-            timezone.utc
-        )
+            st.error(
+                "Tidak bisa mendapatkan daftar "
+                "coin Binance Futures."
+            )
+
+        else:
+
+            st.info(
+                f"{len(symbols)} pair ditemukan. "
+                "Memulai scanning..."
+            )
+
+            results = scan_market(
+                symbols
+            )
+
+            st.session_state[
+                "results"
+            ] = results
+
+            st.session_state[
+                "scan_time"
+            ] = datetime.now(
+                timezone.utc
+            )
+
+            st.session_state[
+                "symbol_count"
+            ] = len(symbols)
 
 
 # =========================================================
@@ -411,114 +673,74 @@ if "results" in st.session_state:
         "results"
     ]
 
-    long_results = [
-        x for x in results
-        if x["signal"] == "LONG"
-    ]
+    st.divider()
 
-    short_results = [
-        x for x in results
-        if x["signal"] == "SHORT"
-    ]
+    if not results:
 
-    col1, col2 = st.columns(2)
-
-
-    # =====================================================
-    # LONG
-    # =====================================================
-
-    with col1:
-
-        st.markdown(
-            "### 🟢 LONG"
+        st.warning(
+            "Tidak ada setup yang memenuhi filter."
         )
 
-        if long_results:
+    else:
 
-            df_long = pd.DataFrame(
-                long_results
-            )
-
-            df_long = df_long[
-                [
-                    "symbol",
-                    "price",
-                    "date"
-                ]
-            ]
-
-            df_long.columns = [
-                "Symbol",
-                "Price",
-                "Date"
-            ]
-
-            st.dataframe(
-                df_long,
-                use_container_width=True,
-                hide_index=True
-            )
-
-        else:
-
-            st.caption(
-                "Tidak ada LONG signal."
-            )
-
-
-    # =====================================================
-    # SHORT
-    # =====================================================
-
-    with col2:
-
-        st.markdown(
-            "### 🔴 SHORT"
+        df = pd.DataFrame(
+            results
         )
 
-        if short_results:
+        df["_score"] = (
+            df["Score"]
+            .str.extract(
+                r"(\d+)"
+            )[0]
+            .astype(int)
+        )
 
-            df_short = pd.DataFrame(
-                short_results
-            )
+        df = df.sort_values(
+            "_score",
+            ascending=False
+        )
 
-            df_short = df_short[
-                [
-                    "symbol",
-                    "price",
-                    "date"
-                ]
-            ]
+        df = df.drop(
+            columns=["_score"]
+        )
 
-            df_short.columns = [
-                "Symbol",
-                "Price",
-                "Date"
-            ]
+        df = df.head(
+            max_results
+        )
 
-            st.dataframe(
-                df_short,
-                use_container_width=True,
-                hide_index=True
-            )
+        st.subheader(
+            f"📊 Top {len(df)} Setup"
+        )
 
-        else:
-
-            st.caption(
-                "Tidak ada SHORT signal."
-            )
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 # =========================================================
-# LAST SCAN
+# INFO
 # =========================================================
+
+if "symbol_count" in st.session_state:
+
+    st.caption(
+        "Pair scanned: "
+        + str(
+            st.session_state[
+                "symbol_count"
+            ]
+        )
+    )
+
 
 if "scan_time" in st.session_state:
 
     st.caption(
         "Last scan: "
-        + st.session_state[
+        +
+        st.session_state[
             "scan_time"
         ].strftime(
             "%Y-%m-%d %H:%M:%S UTC"
