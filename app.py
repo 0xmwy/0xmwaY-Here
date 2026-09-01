@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime, timezone
+import time
 
 # =========================================================
 # CONFIG
@@ -9,56 +9,18 @@ from datetime import datetime, timezone
 
 st.set_page_config(
     page_title="Haiii 0xmwY",
-    page_icon="📊",
+    page_icon="👋",
     layout="wide"
 )
 
-# API KEY
 API_KEY = "937c265e51c344c79b71cd715bb928ba"
 
 BASE_URL = "https://api.twelvedata.com"
 
-EMA_PERIOD = 200
-
-TIMEFRAMES = {
-    "5 Menit": "5min",
-    "15 Menit": "15min",
-    "30 Menit": "30min",
-    "1 Jam": "1h"
-}
-
-
-# =========================================================
-# STYLE
-# =========================================================
-
-st.markdown("""
-<style>
-
-.main-title {
-    font-size: 42px;
-    font-weight: 800;
-}
-
-.subtitle {
-    font-size: 18px;
-    color: #8b949e;
-}
-
-.long-box {
-    background: #123d22;
-    padding: 18px;
-    border-radius: 12px;
-}
-
-.short-box {
-    background: #4a1717;
-    padding: 18px;
-    border-radius: 12px;
-}
-
-</style>
-""", unsafe_allow_html=True)
+EMA_TREND = 200
+EMA_FAST = 9
+EMA_SLOW = 21
+RSI_PERIOD = 14
 
 
 # =========================================================
@@ -66,12 +28,10 @@ st.markdown("""
 # =========================================================
 
 st.markdown(
-    '<div class="main-title">📊 Haiii 0xmwY</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="subtitle">Crypto Market Screener</div>',
+    """
+    <h1>👋 Haiii 0xmwY</h1>
+    <p>Multi-Timeframe Scalping Screener</p>
+    """,
     unsafe_allow_html=True
 )
 
@@ -79,15 +39,18 @@ st.divider()
 
 
 # =========================================================
-# API REQUEST HELPER
+# API REQUEST
 # =========================================================
 
-def api_get(endpoint, params):
+def api_get(endpoint, params=None):
+
+    if params is None:
+        params = {}
 
     params["apikey"] = API_KEY
 
     response = requests.get(
-        f"{BASE_URL}{endpoint}",
+        BASE_URL + endpoint,
         params=params,
         timeout=20
     )
@@ -113,43 +76,40 @@ def api_get(endpoint, params):
 # =========================================================
 
 @st.cache_data(ttl=3600)
-def get_crypto_list():
+def get_crypto_symbols():
 
     data = api_get(
-        "/cryptocurrencies",
-        {}
+        "/cryptocurrencies"
     )
 
-    if not isinstance(data, list):
-
-        if isinstance(data, dict):
-            data = data.get("data", [])
+    if isinstance(data, dict):
+        data = data.get("data", [])
 
     symbols = []
 
-    for item in data:
+    for coin in data:
 
-        symbol = item.get("symbol")
+        symbol = coin.get("symbol")
 
         if symbol:
             symbols.append(symbol)
 
-    # Hanya pasangan USD
-    usd_symbols = [
-        x for x in symbols
-        if x.endswith("/USD")
+    # Fokus pasangan USD
+    symbols = [
+        s for s in symbols
+        if s.endswith("/USD")
     ]
 
     return sorted(
-        list(set(usd_symbols))
+        list(set(symbols))
     )
 
 
 # =========================================================
-# GET CANDLE
+# GET CANDLES
 # =========================================================
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def get_candles(symbol, interval):
 
     data = api_get(
@@ -157,7 +117,7 @@ def get_candles(symbol, interval):
         {
             "symbol": symbol,
             "interval": interval,
-            "outputsize": 220
+            "outputsize": 250
         }
     )
 
@@ -168,34 +128,117 @@ def get_candles(symbol, interval):
 
     df = pd.DataFrame(values)
 
-    if "close" not in df.columns:
-        return None
+    required_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+    ]
 
-    df["close"] = pd.to_numeric(
-        df["close"],
-        errors="coerce"
-    )
+    for column in required_columns:
+
+        if column not in df.columns:
+            return None
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce"
+        )
 
     df = df.dropna(
-        subset=["close"]
+        subset=required_columns
     )
 
-    if len(df) < EMA_PERIOD:
+    if len(df) < 220:
         return None
 
-    # API biasanya mengirim terbaru -> terlama
-    # Kita balik menjadi terlama -> terbaru
+    # Lama -> terbaru
     df = df.iloc[::-1].reset_index(
         drop=True
     )
+
+    return df
+
+
+# =========================================================
+# INDICATORS
+# =========================================================
+
+def add_indicators(df):
+
+    df = df.copy()
 
     # EMA 200
     df["ema200"] = (
         df["close"]
         .ewm(
-            span=EMA_PERIOD,
+            span=EMA_TREND,
             adjust=False
         )
+        .mean()
+    )
+
+    # EMA 9
+    df["ema9"] = (
+        df["close"]
+        .ewm(
+            span=EMA_FAST,
+            adjust=False
+        )
+        .mean()
+    )
+
+    # EMA 21
+    df["ema21"] = (
+        df["close"]
+        .ewm(
+            span=EMA_SLOW,
+            adjust=False
+        )
+        .mean()
+    )
+
+    # RSI 14
+    delta = df["close"].diff()
+
+    gain = delta.clip(
+        lower=0
+    )
+
+    loss = -delta.clip(
+        upper=0
+    )
+
+    avg_gain = (
+        gain
+        .rolling(RSI_PERIOD)
+        .mean()
+    )
+
+    avg_loss = (
+        loss
+        .rolling(RSI_PERIOD)
+        .mean()
+    )
+
+    rs = avg_gain / avg_loss.replace(
+        0,
+        pd.NA
+    )
+
+    df["rsi"] = (
+        100 -
+        (
+            100 /
+            (1 + rs)
+        )
+    )
+
+    # Rata-rata volume 20 candle
+    df["volume_avg"] = (
+        df["volume"]
+        .rolling(20)
         .mean()
     )
 
@@ -203,345 +246,431 @@ def get_candles(symbol, interval):
 
 
 # =========================================================
-# ANALYZE
+# ANALYZE COIN
 # =========================================================
 
-def analyze(symbol, interval):
+def analyze_coin(symbol):
 
-    df = get_candles(
-        symbol,
-        interval
-    )
+    try:
 
-    if df is None:
+        # -------------------------------------------------
+        # GET ALL TIMEFRAMES
+        # -------------------------------------------------
+
+        df_1h = get_candles(
+            symbol,
+            "1h"
+        )
+
+        df_30m = get_candles(
+            symbol,
+            "30min"
+        )
+
+        df_15m = get_candles(
+            symbol,
+            "15min"
+        )
+
+        df_5m = get_candles(
+            symbol,
+            "5min"
+        )
+
+        if any(
+            df is None
+            for df in [
+                df_1h,
+                df_30m,
+                df_15m,
+                df_5m
+            ]
+        ):
+            return None
+
+        # -------------------------------------------------
+        # ADD INDICATORS
+        # -------------------------------------------------
+
+        df_1h = add_indicators(df_1h)
+        df_30m = add_indicators(df_30m)
+        df_15m = add_indicators(df_15m)
+        df_5m = add_indicators(df_5m)
+
+        # Candle terakhir yang SUDAH CLOSE
+        h1 = df_1h.iloc[-2]
+        m30 = df_30m.iloc[-2]
+        m15 = df_15m.iloc[-2]
+        m5 = df_5m.iloc[-2]
+
+        # =================================================
+        # LONG SCORE
+        # =================================================
+
+        long_score = 0
+
+        # 1H bullish
+        if h1["close"] > h1["ema200"]:
+            long_score += 1
+
+        # 30M bullish
+        if (
+            m30["close"] > m30["ema200"]
+            and
+            m30["ema9"] > m30["ema21"]
+        ):
+            long_score += 1
+
+        # 15M bullish momentum
+        if m15["ema9"] > m15["ema21"]:
+            long_score += 1
+
+        # 5M bullish momentum
+        if (
+            m5["ema9"] > m5["ema21"]
+            and
+            m5["close"] > m5["ema9"]
+        ):
+            long_score += 1
+
+        # RSI + volume
+        if (
+            45 <= m5["rsi"] <= 70
+            and
+            m5["volume"] > m5["volume_avg"]
+        ):
+            long_score += 1
+
+        # =================================================
+        # SHORT SCORE
+        # =================================================
+
+        short_score = 0
+
+        # 1H bearish
+        if h1["close"] < h1["ema200"]:
+            short_score += 1
+
+        # 30M bearish
+        if (
+            m30["close"] < m30["ema200"]
+            and
+            m30["ema9"] < m30["ema21"]
+        ):
+            short_score += 1
+
+        # 15M bearish momentum
+        if m15["ema9"] < m15["ema21"]:
+            short_score += 1
+
+        # 5M bearish momentum
+        if (
+            m5["ema9"] < m5["ema21"]
+            and
+            m5["close"] < m5["ema9"]
+        ):
+            short_score += 1
+
+        # RSI + volume
+        if (
+            30 <= m5["rsi"] <= 55
+            and
+            m5["volume"] > m5["volume_avg"]
+        ):
+            short_score += 1
+
+        # =================================================
+        # SELECT SIGNAL
+        # =================================================
+
+        if long_score > short_score:
+
+            signal = "LONG"
+            score = long_score
+
+        elif short_score > long_score:
+
+            signal = "SHORT"
+            score = short_score
+
+        else:
+
+            signal = "NEUTRAL"
+            score = long_score
+
+        # Hanya tampilkan score >= 3
+        if score < 3:
+            return None
+
+        # =================================================
+        # STRENGTH
+        # =================================================
+
+        if score == 5:
+            strength = "STRONG"
+
+        elif score == 4:
+            strength = "GOOD"
+
+        else:
+            strength = "WATCH"
+
+        return {
+            "Coin": symbol,
+            "Signal": signal,
+            "Score": score,
+            "Strength": strength,
+            "Price": float(m5["close"]),
+            "RSI": round(
+                float(m5["rsi"]),
+                2
+            ),
+            "EMA200 1H": round(
+                float(h1["ema200"]),
+                6
+            )
+        }
+
+    except Exception:
         return None
 
-    if len(df) < 3:
-        return None
 
-    current = df.iloc[-1]
-    previous = df.iloc[-2]
+# =========================================================
+# SIDEBAR
+# =========================================================
 
-    price = float(
-        current["close"]
-    )
+st.sidebar.header(
+    "⚙️ Scanner"
+)
 
-    ema = float(
-        current["ema200"]
-    )
+max_coins = st.sidebar.selectbox(
+    "Jumlah coin",
+    [10, 25, 50, 100],
+    index=1
+)
 
-    previous_price = float(
-        previous["close"]
-    )
-
-    previous_ema = float(
-        previous["ema200"]
-    )
-
-    signal = "NEUTRAL"
-
-    # =====================================================
-    # LONG
-    # =====================================================
-
-    if (
-        price > ema
-        and previous_price <= previous_ema
-    ):
-        signal = "LONG"
-
-    # =====================================================
-    # SHORT
-    # =====================================================
-
-    elif (
-        price < ema
-        and previous_price >= previous_ema
-    ):
-        signal = "SHORT"
-
-    distance = (
-        (price - ema)
-        / ema
-        * 100
-    )
-
-    return {
-        "Symbol": symbol,
-        "Price": price,
-        "EMA200": ema,
-        "Distance %": distance,
-        "Signal": signal
-    }
+minimum_score = st.sidebar.selectbox(
+    "Minimum Score",
+    [3, 4, 5],
+    index=0
+)
 
 
 # =========================================================
-# CONTROLS
-# =========================================================
-
-col1, col2 = st.columns(2)
-
-with col1:
-
-    timeframe_name = st.selectbox(
-        "Timeframe",
-        list(TIMEFRAMES.keys())
-    )
-
-with col2:
-
-    max_coins = st.selectbox(
-        "Jumlah coin yang discan",
-        [10, 25, 50, 100],
-        index=0
-    )
-
-
-interval = TIMEFRAMES[
-    timeframe_name
-]
-
-
-# =========================================================
-# SCAN BUTTON
+# SCAN
 # =========================================================
 
 if st.button(
-    "🔄 SCAN MARKET",
+    "🔎 SCAN MARKET",
     use_container_width=True
 ):
 
-    # -----------------------------------------------------
-    # GET SYMBOLS
-    # -----------------------------------------------------
+    try:
 
-    with st.spinner(
-        "Mengambil daftar cryptocurrency..."
-    ):
+        # -------------------------------------------------
+        # GET COINS
+        # -------------------------------------------------
 
-        try:
+        with st.spinner(
+            "Mengambil daftar cryptocurrency..."
+        ):
 
-            symbols = get_crypto_list()
+            symbols = get_crypto_symbols()
 
-        except Exception as e:
+        if not symbols:
 
             st.error(
-                f"Gagal mengambil daftar coin: {e}"
+                "Daftar coin kosong."
             )
 
             st.stop()
 
-    if not symbols:
+        symbols = symbols[:max_coins]
+
+        # -------------------------------------------------
+        # SCANNING
+        # -------------------------------------------------
+
+        results = []
+
+        progress = st.progress(0)
+
+        status = st.empty()
+
+        total = len(symbols)
+
+        for index, symbol in enumerate(
+            symbols
+        ):
+
+            status.write(
+                f"Scanning {symbol} "
+                f"({index + 1}/{total})"
+            )
+
+            result = analyze_coin(
+                symbol
+            )
+
+            if result:
+
+                if (
+                    result["Score"]
+                    >= minimum_score
+                ):
+
+                    results.append(
+                        result
+                    )
+
+            progress.progress(
+                (index + 1) / total
+            )
+
+            time.sleep(0.1)
+
+        progress.empty()
+        status.empty()
+
+        # -------------------------------------------------
+        # NO SIGNAL
+        # -------------------------------------------------
+
+        if not results:
+
+            st.warning(
+                "Belum ada setup yang memenuhi "
+                "kriteria."
+            )
+
+            st.info(
+                "Coba gunakan Minimum Score = 3."
+            )
+
+            st.stop()
+
+        # -------------------------------------------------
+        # DATA
+        # -------------------------------------------------
+
+        df = pd.DataFrame(
+            results
+        )
+
+        df = df.sort_values(
+            by="Score",
+            ascending=False
+        )
+
+        long_df = df[
+            df["Signal"] == "LONG"
+        ]
+
+        short_df = df[
+            df["Signal"] == "SHORT"
+        ]
+
+        # =================================================
+        # SUMMARY
+        # =================================================
+
+        st.divider()
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.metric(
+                "🟢 LONG",
+                len(long_df)
+            )
+
+        with col2:
+
+            st.metric(
+                "🔴 SHORT",
+                len(short_df)
+            )
+
+        # =================================================
+        # LONG
+        # =================================================
+
+        st.subheader(
+            "🟢 LONG SETUPS"
+        )
+
+        if long_df.empty:
+
+            st.info(
+                "Belum ada LONG setup."
+            )
+
+        else:
+
+            st.dataframe(
+                long_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        # =================================================
+        # SHORT
+        # =================================================
+
+        st.subheader(
+            "🔴 SHORT SETUPS"
+        )
+
+        if short_df.empty:
+
+            st.info(
+                "Belum ada SHORT setup."
+            )
+
+        else:
+
+            st.dataframe(
+                short_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        # =================================================
+        # BEST SETUP
+        # =================================================
+
+        st.divider()
+
+        st.subheader(
+            "⭐ Best Setup"
+        )
+
+        best = df.iloc[0]
+
+        if best["Signal"] == "LONG":
+
+            st.success(
+                f"🟢 {best['Coin']} — "
+                f"LONG — "
+                f"Score {best['Score']}/5"
+            )
+
+        elif best["Signal"] == "SHORT":
+
+            st.error(
+                f"🔴 {best['Coin']} — "
+                f"SHORT — "
+                f"Score {best['Score']}/5"
+            )
+
+        st.caption(
+            "Signal menggunakan candle yang sudah "
+            "close. Ini adalah screener, bukan jaminan profit."
+        )
+
+    except Exception as e:
 
         st.error(
-            "Tidak ada cryptocurrency yang ditemukan."
+            f"ERROR: {e}"
         )
-
-        st.stop()
-
-    # -----------------------------------------------------
-    # LIMIT SCAN
-    # -----------------------------------------------------
-
-    symbols = symbols[:max_coins]
-
-    results = []
-
-    progress = st.progress(0)
-
-    status = st.empty()
-
-    total = len(symbols)
-
-    # -----------------------------------------------------
-    # SCAN
-    # -----------------------------------------------------
-
-    for index, symbol in enumerate(symbols):
-
-        status.write(
-            f"Scanning {symbol} "
-            f"({index + 1}/{total})"
-        )
-
-        try:
-
-            result = analyze(
-                symbol,
-                interval
-            )
-
-            if result is not None:
-                results.append(result)
-
-        except Exception:
-            pass
-
-        progress.progress(
-            (index + 1) / total
-        )
-
-    progress.empty()
-    status.empty()
-
-    # -----------------------------------------------------
-    # NO DATA
-    # -----------------------------------------------------
-
-    if not results:
-
-        st.warning(
-            "Tidak ada data yang berhasil diambil."
-        )
-
-        st.stop()
-
-    # -----------------------------------------------------
-    # DATAFRAME
-    # -----------------------------------------------------
-
-    df = pd.DataFrame(results)
-
-    df["Price"] = df["Price"].round(8)
-    df["EMA200"] = df["EMA200"].round(8)
-    df["Distance %"] = df["Distance %"].round(3)
-
-    # -----------------------------------------------------
-    # SIGNALS
-    # -----------------------------------------------------
-
-    long_df = df[
-        df["Signal"] == "LONG"
-    ].copy()
-
-    short_df = df[
-        df["Signal"] == "SHORT"
-    ].copy()
-
-    # =====================================================
-    # SUMMARY
-    # =====================================================
-
-    st.divider()
-
-    st.subheader(
-        f"Market Scan — {timeframe_name}"
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.markdown(
-            f"""
-            <div class="long-box">
-                <h2>🟢 LONG</h2>
-                <h3>{len(long_df)} signal</h3>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col2:
-
-        st.markdown(
-            f"""
-            <div class="short-box">
-                <h2>🔴 SHORT</h2>
-                <h3>{len(short_df)} signal</h3>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    # =====================================================
-    # LONG
-    # =====================================================
-
-    st.subheader("🟢 LONG")
-
-    if long_df.empty:
-
-        st.info(
-            "Tidak ada LONG signal."
-        )
-
-    else:
-
-        st.dataframe(
-            long_df[
-                [
-                    "Symbol",
-                    "Price",
-                    "EMA200",
-                    "Distance %",
-                    "Signal"
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True
-        )
-
-    # =====================================================
-    # SHORT
-    # =====================================================
-
-    st.subheader("🔴 SHORT")
-
-    if short_df.empty:
-
-        st.info(
-            "Tidak ada SHORT signal."
-        )
-
-    else:
-
-        st.dataframe(
-            short_df[
-                [
-                    "Symbol",
-                    "Price",
-                    "EMA200",
-                    "Distance %",
-                    "Signal"
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True
-        )
-
-    # =====================================================
-    # ALL RESULTS
-    # =====================================================
-
-    with st.expander(
-        "📋 Lihat semua hasil scan"
-    ):
-
-        st.dataframe(
-            df[
-                [
-                    "Symbol",
-                    "Price",
-                    "EMA200",
-                    "Distance %",
-                    "Signal"
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True
-        )
-
-    # =====================================================
-    # TIME
-    # =====================================================
-
-    now = datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
-
-    st.caption(
-        f"Scanner run: {now}"
-            )
