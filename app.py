@@ -13,16 +13,14 @@ st.set_page_config(
     layout="wide"
 )
 
-OKX_BASE_URL = "https://www.okx.com"
+BASE_URL = "https://www.okx.com"
 
-# TIMEFRAME SCREENER
 TIMEFRAMES = {
     "15M": "15m",
     "30M": "30m",
     "1H": "1H"
 }
 
-# BOLLINGER BANDS
 BB_PERIOD = 20
 BB_STD = 2
 
@@ -47,47 +45,40 @@ st.divider()
 
 
 # =========================================================
-# OKX PUBLIC API
+# API REQUEST
 # =========================================================
 
-def okx_get(endpoint, params=None):
+def api_get(endpoint, params=None):
 
     if params is None:
         params = {}
 
     response = requests.get(
-        OKX_BASE_URL + endpoint,
+        BASE_URL + endpoint,
         params=params,
         timeout=20
     )
 
-    if response.status_code != 200:
-        raise Exception(
-            f"HTTP {response.status_code}: "
-            f"{response.text[:300]}"
-        )
+    response.raise_for_status()
 
     data = response.json()
 
     if data.get("code") != "0":
         raise Exception(
-            data.get(
-                "msg",
-                "OKX API error"
-            )
+            data.get("msg", "API error")
         )
 
     return data.get("data", [])
 
 
 # =========================================================
-# GET ALL USDT PERPETUAL
+# GET PAIR
 # =========================================================
 
 @st.cache_data(ttl=1800)
 def get_symbols():
 
-    data = okx_get(
+    data = api_get(
         "/api/v5/public/instruments",
         {
             "instType": "SWAP"
@@ -111,7 +102,7 @@ def get_symbols():
 
     if not symbols:
         raise Exception(
-            "Tidak ada USDT perpetual OKX ditemukan."
+            "Tidak ada pair USDT yang ditemukan."
         )
 
     return sorted(symbols)
@@ -122,12 +113,9 @@ def get_symbols():
 # =========================================================
 
 @st.cache_data(ttl=30)
-def get_candles(
-    inst_id,
-    bar
-):
+def get_candles(inst_id, bar):
 
-    data = okx_get(
+    data = api_get(
         "/api/v5/market/candles",
         {
             "instId": inst_id,
@@ -158,7 +146,6 @@ def get_candles(
     if len(rows) < BB_PERIOD + 5:
         return None
 
-    # OKX mengirim candle terbaru lebih dulu
     df = (
         pd.DataFrame(rows)
         .iloc[::-1]
@@ -169,10 +156,10 @@ def get_candles(
 
 
 # =========================================================
-# BOLLINGER BANDS
+# CALCULATE BANDS
 # =========================================================
 
-def calculate_bollinger(df):
+def calculate_bands(df):
 
     df = df.copy()
 
@@ -190,14 +177,12 @@ def calculate_bollinger(df):
 
     df["upper"] = (
         df["middle"]
-        +
-        BB_STD * df["std"]
+        + BB_STD * df["std"]
     )
 
     df["lower"] = (
         df["middle"]
-        -
-        BB_STD * df["std"]
+        - BB_STD * df["std"]
     )
 
     return df
@@ -209,9 +194,8 @@ def calculate_bollinger(df):
 
 def analyze_timeframe(df):
 
-    df = calculate_bollinger(df)
+    df = calculate_bands(df)
 
-    # Gunakan candle yang sudah close
     current = df.iloc[-2]
     previous = df.iloc[-3]
 
@@ -240,42 +224,32 @@ def analyze_timeframe(df):
     # LONG
     # =====================================================
 
-    # Rebound dari lower Bollinger Band
     if (
         previous_close <= previous_lower
-        and
-        close > lower
+        and close > lower
     ):
-
         long_signal = True
 
     elif (
         close <= lower * 1.003
-        and
-        close > previous_close
+        and close > previous_close
     ):
-
         long_signal = True
 
     # =====================================================
     # SHORT
     # =====================================================
 
-    # Rejection dari upper Bollinger Band
     if (
         previous_close >= previous_upper
-        and
-        close < upper
+        and close < upper
     ):
-
         short_signal = True
 
     elif (
         close >= upper * 0.997
-        and
-        close < previous_close
+        and close < previous_close
     ):
-
         short_signal = True
 
     return {
@@ -289,10 +263,10 @@ def analyze_timeframe(df):
 
 
 # =========================================================
-# ANALYZE COIN
+# ANALYZE PAIR
 # =========================================================
 
-def analyze_coin(inst_id):
+def analyze_pair(inst_id):
 
     try:
 
@@ -308,16 +282,12 @@ def analyze_coin(inst_id):
             if df is None:
                 continue
 
-            results[label] = (
-                analyze_timeframe(df)
+            results[label] = analyze_timeframe(
+                df
             )
 
         if not results:
             return None
-
-        # =================================================
-        # SIGNAL COUNT
-        # =================================================
 
         long_tf = sum(
             1
@@ -331,11 +301,6 @@ def analyze_coin(inst_id):
             if result["short"]
         )
 
-        # =================================================
-        # PRICE BASE
-        # =================================================
-
-        # Prioritaskan 15M sebagai timeframe utama
         base = results.get(
             "15M",
             next(iter(results.values()))
@@ -346,27 +311,23 @@ def analyze_coin(inst_id):
         middle = base["middle"]
         lower = base["lower"]
 
-        band_width = (
-            upper - lower
-        )
+        band_width = upper - lower
 
         if band_width <= 0:
             return None
 
         # =================================================
-        # LONG ENTRY
+        # ENTRY LONG
         # =================================================
 
         long_entry_low = lower
-
         long_entry_high = price
 
         # =================================================
-        # SHORT ENTRY
+        # ENTRY SHORT
         # =================================================
 
         short_entry_low = price
-
         short_entry_high = upper
 
         # =================================================
@@ -375,26 +336,18 @@ def analyze_coin(inst_id):
 
         long_tp = middle
 
-        short_tp = middle
-
-        # Jika middle sudah berada
-        # di sisi yang salah, gunakan
-        # target berdasarkan lebar BB.
-
         if long_tp <= price:
-
             long_tp = (
                 price
-                +
-                band_width * 0.50
+                + band_width * 0.50
             )
 
-        if short_tp >= price:
+        short_tp = middle
 
+        if short_tp >= price:
             short_tp = (
                 price
-                -
-                band_width * 0.50
+                - band_width * 0.50
             )
 
         # =================================================
@@ -402,20 +355,25 @@ def analyze_coin(inst_id):
         # =================================================
 
         if long_tf > short_tf:
-
             direction = "LONG"
 
         elif short_tf > long_tf:
-
             direction = "SHORT"
 
         else:
-
             direction = "NEUTRAL"
+
+        # Hanya nama tampilan yang diubah.
+        # Request API tetap memakai inst_id lengkap.
+
+        display_pair = inst_id.replace(
+            "-SWAP",
+            ""
+        )
 
         return {
 
-            "Coin": inst_id,
+            "Coin": display_pair,
 
             "Direction": direction,
 
@@ -453,9 +411,7 @@ def analyze_coin(inst_id):
                         "long",
                         False
                     )
-
                     else
-
                     "SHORT"
                     if results.get(
                         "15M",
@@ -464,7 +420,6 @@ def analyze_coin(inst_id):
                         "short",
                         False
                     )
-
                     else "-"
                 ),
 
@@ -478,9 +433,7 @@ def analyze_coin(inst_id):
                         "long",
                         False
                     )
-
                     else
-
                     "SHORT"
                     if results.get(
                         "30M",
@@ -489,7 +442,6 @@ def analyze_coin(inst_id):
                         "short",
                         False
                     )
-
                     else "-"
                 ),
 
@@ -503,9 +455,7 @@ def analyze_coin(inst_id):
                         "long",
                         False
                     )
-
                     else
-
                     "SHORT"
                     if results.get(
                         "1H",
@@ -514,13 +464,11 @@ def analyze_coin(inst_id):
                         "short",
                         False
                     )
-
                     else "-"
                 )
         }
 
     except Exception:
-
         return None
 
 
@@ -551,9 +499,7 @@ def format_price(value):
 # SIDEBAR
 # =========================================================
 
-st.sidebar.header(
-    "⚙️ Scanner"
-)
+st.sidebar.header("⚙️ Scanner")
 
 scan_limit = st.sidebar.selectbox(
     "Jumlah pair",
@@ -569,20 +515,16 @@ scan_limit = st.sidebar.selectbox(
 )
 
 st.sidebar.caption(
-    "OKX USDT Perpetual"
+    "USDT Perpetual"
 )
 
 st.sidebar.caption(
     "15M • 30M • 1H"
 )
 
-st.sidebar.caption(
-    "Bollinger Bands 20 / 2"
-)
-
 
 # =========================================================
-# MARKET
+# LOAD MARKET
 # =========================================================
 
 try:
@@ -590,19 +532,16 @@ try:
     symbols = get_symbols()
 
     st.info(
-        f"OKX menemukan "
-        f"**{len(symbols)} USDT perpetual**."
+        f"Ditemukan **{len(symbols)} pair USDT**."
     )
 
 except Exception as e:
 
     st.error(
-        "❌ Gagal mengambil market OKX."
+        "❌ Gagal mengambil data market."
     )
 
-    st.code(
-        str(e)
-    )
+    st.code(str(e))
 
     st.stop()
 
@@ -616,24 +555,18 @@ if st.button(
     use_container_width=True
 ):
 
-    scan_symbols = symbols[
-        :scan_limit
-    ]
+    scan_symbols = symbols[:scan_limit]
 
     results = []
 
-    progress = st.progress(
-        0
-    )
+    progress = st.progress(0)
 
     status = st.empty()
 
-    total = len(
-        scan_symbols
-    )
+    total = len(scan_symbols)
 
     # =====================================================
-    # SCAN LOOP
+    # SCAN
     # =====================================================
 
     for i, symbol in enumerate(
@@ -645,28 +578,24 @@ if st.button(
             f"({i + 1}/{total})"
         )
 
-        result = analyze_coin(
+        result = analyze_pair(
             symbol
         )
 
         if result:
-            results.append(
-                result
-            )
+            results.append(result)
 
         progress.progress(
             (i + 1) / total
         )
 
-        time.sleep(
-            0.08
-        )
+        time.sleep(0.08)
 
     progress.empty()
     status.empty()
 
     # =====================================================
-    # CHECK RESULT
+    # RESULT
     # =====================================================
 
     if not results:
@@ -677,12 +606,10 @@ if st.button(
 
         st.stop()
 
-    df = pd.DataFrame(
-        results
-    )
+    df = pd.DataFrame(results)
 
     # =====================================================
-    # LONG CANDIDATES
+    # LONG
     # =====================================================
 
     long_df = df[
@@ -698,7 +625,7 @@ if st.button(
     )
 
     # =====================================================
-    # SHORT CANDIDATES
+    # SHORT
     # =====================================================
 
     short_df = df[
@@ -724,14 +651,12 @@ if st.button(
     )
 
     # =====================================================
-    # BEST LONG
+    # TARGET LONG
     # =====================================================
 
     if len(long_df) > 0:
 
-        best_long = (
-            long_df.iloc[0]
-        )
+        best_long = long_df.iloc[0]
 
         st.success(
             f"""
@@ -762,14 +687,12 @@ if st.button(
         )
 
     # =====================================================
-    # BEST SHORT
+    # TARGET SHORT
     # =====================================================
 
     if len(short_df) > 0:
 
-        best_short = (
-            short_df.iloc[0]
-        )
+        best_short = short_df.iloc[0]
 
         st.error(
             f"""
@@ -800,7 +723,7 @@ if st.button(
         )
 
     # =====================================================
-    # LONG LIST
+    # LONG CANDIDATES
     # =====================================================
 
     st.divider()
@@ -828,19 +751,15 @@ if st.button(
                 ),
 
             "Take Profit":
-                long_df[
-                    "Long TP"
-                ].apply(
+                long_df["Long TP"].apply(
                     format_price
                 ),
 
             "Confirm":
                 (
-                    long_df[
-                        "Long TF"
-                    ].astype(str)
-                    +
-                    "/3"
+                    long_df["Long TF"]
+                    .astype(str)
+                    + "/3"
                 )
         })
 
@@ -857,7 +776,7 @@ if st.button(
         )
 
     # =====================================================
-    # SHORT LIST
+    # SHORT CANDIDATES
     # =====================================================
 
     st.subheader(
@@ -883,19 +802,15 @@ if st.button(
                 ),
 
             "Take Profit":
-                short_df[
-                    "Short TP"
-                ].apply(
+                short_df["Short TP"].apply(
                     format_price
                 ),
 
             "Confirm":
                 (
-                    short_df[
-                        "Short TF"
-                    ].astype(str)
-                    +
-                    "/3"
+                    short_df["Short TF"]
+                    .astype(str)
+                    + "/3"
                 )
         })
 
@@ -948,10 +863,6 @@ if st.button(
     # =====================================================
 
     st.divider()
-
-    st.caption(
-        "Bollinger Bands: period 20 • standard deviation 2"
-    )
 
     st.caption(
         "Signal bersifat teknikal dan bukan jaminan profit. DYOR."
