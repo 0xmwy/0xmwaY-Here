@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
+import math
 
 # =========================================================
 # CONFIG
@@ -13,10 +14,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# API KEY
+# =========================================================
+# API KEY — SUDAH DIISI
+# =========================================================
+
 API_KEY = "937c265e51c344c79b71cd715bb928ba"
 
 BASE_URL = "https://api.twelvedata.com"
+
+# =========================================================
+# SETTINGS
+# =========================================================
 
 TIMEFRAMES = {
     "5M": "5min",
@@ -29,6 +37,7 @@ EMA_FAST = 9
 EMA_SLOW = 21
 EMA_TREND = 200
 RSI_PERIOD = 14
+ATR_PERIOD = 14
 
 
 # =========================================================
@@ -37,14 +46,14 @@ RSI_PERIOD = 14
 
 st.title("👋 Haiii 0xmwY")
 st.caption(
-    "Crypto Scalping Scanner • EMA 9/21/200 • RSI • Volume"
+    "Multi-Timeframe Crypto Scalping Scanner"
 )
 
 st.divider()
 
 
 # =========================================================
-# API FUNCTION
+# API REQUEST
 # =========================================================
 
 def api_get(endpoint, params=None):
@@ -54,33 +63,41 @@ def api_get(endpoint, params=None):
 
     params["apikey"] = API_KEY
 
-    url = BASE_URL + endpoint
+    try:
 
-    response = requests.get(
-        url,
-        params=params,
-        timeout=20
-    )
+        response = requests.get(
+            BASE_URL + endpoint,
+            params=params,
+            timeout=20
+        )
 
-    # HTTP error
+    except requests.exceptions.RequestException as e:
+
+        raise Exception(
+            f"Koneksi API gagal: {e}"
+        )
+
     if response.status_code != 200:
+
         raise Exception(
             f"HTTP {response.status_code}: "
             f"{response.text[:300]}"
         )
 
     try:
+
         data = response.json()
+
     except Exception:
+
         raise Exception(
-            "Response API bukan JSON: "
-            + response.text[:300]
+            "Server API tidak mengembalikan JSON."
         )
 
-    # Twelve Data API error
     if isinstance(data, dict):
 
         if data.get("status") == "error":
+
             raise Exception(
                 data.get(
                     "message",
@@ -102,11 +119,18 @@ def test_api():
         {
             "symbol": "BTC/USD",
             "interval": "5min",
-            "outputsize": 5
+            "outputsize": 10
         }
     )
 
+    if not isinstance(data, dict):
+
+        raise Exception(
+            "Format response API tidak valid."
+        )
+
     if not data.get("values"):
+
         raise Exception(
             "BTC/USD tidak mengembalikan candle."
         )
@@ -115,7 +139,7 @@ def test_api():
 
 
 # =========================================================
-# GET CRYPTO LIST
+# CRYPTO LIST
 # =========================================================
 
 @st.cache_data(ttl=3600)
@@ -125,9 +149,6 @@ def get_crypto_list():
         "/cryptocurrencies"
     )
 
-    # Bentuk response normal:
-    # {"data":[...]}
-
     if isinstance(data, dict):
 
         coins = data.get(
@@ -135,9 +156,13 @@ def get_crypto_list():
             []
         )
 
-    else:
+    elif isinstance(data, list):
 
         coins = data
+
+    else:
+
+        coins = []
 
     symbols = []
 
@@ -153,18 +178,19 @@ def get_crypto_list():
 
             symbol = str(coin)
 
-        if symbol:
+        if not symbol:
+            continue
 
-            symbol = str(
+        symbol = str(
+            symbol
+        ).upper()
+
+        # Hanya crypto yang punya pasangan USD
+        if "/" in symbol:
+
+            symbols.append(
                 symbol
-            ).upper()
-
-            # Pastikan pair crypto/USD
-            if symbol.endswith("/USD"):
-
-                symbols.append(
-                    symbol
-                )
+            )
 
     symbols = sorted(
         list(
@@ -175,8 +201,7 @@ def get_crypto_list():
     if not symbols:
 
         raise Exception(
-            "Twelve Data tidak mengembalikan "
-            "daftar cryptocurrency/USD."
+            "Daftar cryptocurrency kosong."
         )
 
     return symbols
@@ -186,7 +211,7 @@ def get_crypto_list():
 # GET CANDLES
 # =========================================================
 
-@st.cache_data(ttl=45)
+@st.cache_data(ttl=30)
 def get_candles(
     symbol,
     interval
@@ -201,19 +226,21 @@ def get_candles(
         }
     )
 
+    if not isinstance(data, dict):
+        return None
+
     values = data.get(
         "values"
     )
 
     if not values:
-
         return None
 
     df = pd.DataFrame(
         values
     )
 
-    required = [
+    required_columns = [
         "datetime",
         "open",
         "high",
@@ -221,13 +248,12 @@ def get_candles(
         "close"
     ]
 
-    for column in required:
+    for column in required_columns:
 
         if column not in df.columns:
 
             return None
 
-    # volume tidak selalu tersedia
     if "volume" not in df.columns:
 
         df["volume"] = 0
@@ -261,9 +287,11 @@ def get_candles(
         return None
 
     # API mengembalikan terbaru -> lama
-    # Kita ubah menjadi lama -> terbaru
-    df = df.iloc[::-1].reset_index(
-        drop=True
+    # Kita balik menjadi lama -> terbaru
+
+    df = (
+        df.iloc[::-1]
+        .reset_index(drop=True)
     )
 
     return df
@@ -277,7 +305,10 @@ def calculate_indicators(df):
 
     df = df.copy()
 
+    # -----------------------------------------------------
     # EMA 9
+    # -----------------------------------------------------
+
     df["ema9"] = (
         df["close"]
         .ewm(
@@ -287,7 +318,10 @@ def calculate_indicators(df):
         .mean()
     )
 
+    # -----------------------------------------------------
     # EMA 21
+    # -----------------------------------------------------
+
     df["ema21"] = (
         df["close"]
         .ewm(
@@ -297,7 +331,10 @@ def calculate_indicators(df):
         .mean()
     )
 
+    # -----------------------------------------------------
     # EMA 200
+    # -----------------------------------------------------
+
     df["ema200"] = (
         df["close"]
         .ewm(
@@ -307,7 +344,10 @@ def calculate_indicators(df):
         .mean()
     )
 
+    # -----------------------------------------------------
     # RSI
+    # -----------------------------------------------------
+
     delta = df["close"].diff()
 
     gain = delta.clip(
@@ -350,7 +390,48 @@ def calculate_indicators(df):
         )
     )
 
-    # Volume average
+    # -----------------------------------------------------
+    # ATR
+    # -----------------------------------------------------
+
+    high_low = (
+        df["high"] -
+        df["low"]
+    )
+
+    high_close = (
+        df["high"] -
+        df["close"].shift(1)
+    ).abs()
+
+    low_close = (
+        df["low"] -
+        df["close"].shift(1)
+    ).abs()
+
+    true_range = pd.concat(
+        [
+            high_low,
+            high_close,
+            low_close
+        ],
+        axis=1
+    ).max(
+        axis=1
+    )
+
+    df["atr"] = (
+        true_range
+        .rolling(
+            ATR_PERIOD
+        )
+        .mean()
+    )
+
+    # -----------------------------------------------------
+    # Average Volume
+    # -----------------------------------------------------
+
     df["volume_avg"] = (
         df["volume"]
         .rolling(20)
@@ -361,16 +442,16 @@ def calculate_indicators(df):
 
 
 # =========================================================
-# SCORE
+# ANALYZE ONE TIMEFRAME
 # =========================================================
 
-def calculate_score(df):
+def analyze_timeframe(df):
 
     df = calculate_indicators(
         df
     )
 
-    # Candle terakhir yang SUDAH CLOSE
+    # Gunakan candle yang sudah close
     current = df.iloc[-2]
     previous = df.iloc[-3]
 
@@ -378,7 +459,7 @@ def calculate_score(df):
     short_score = 0
 
     # =====================================================
-    # EMA 200 TREND
+    # TREND
     # =====================================================
 
     if current["close"] > current["ema200"]:
@@ -390,7 +471,7 @@ def calculate_score(df):
         short_score += 2
 
     # =====================================================
-    # EMA 9 / 21
+    # EMA MOMENTUM
     # =====================================================
 
     if current["ema9"] > current["ema21"]:
@@ -402,7 +483,7 @@ def calculate_score(df):
         short_score += 2
 
     # =====================================================
-    # MOMENTUM EMA 9
+    # EMA DIRECTION
     # =====================================================
 
     if current["ema9"] > previous["ema9"]:
@@ -421,16 +502,17 @@ def calculate_score(df):
         current["rsi"]
     )
 
-    if 45 <= rsi <= 70:
+    # Tidak terlalu ketat
+    if rsi >= 45:
 
         long_score += 1
 
-    if 30 <= rsi <= 55:
+    if rsi <= 55:
 
         short_score += 1
 
     # =====================================================
-    # CANDLE MOMENTUM
+    # CANDLE
     # =====================================================
 
     if current["close"] > current["open"]:
@@ -445,9 +527,18 @@ def calculate_score(df):
     # VOLUME
     # =====================================================
 
-    if (
+    volume = float(
         current["volume"]
-        > current["volume_avg"]
+    )
+
+    volume_avg = float(
+        current["volume_avg"]
+    )
+
+    if (
+        volume_avg > 0
+        and
+        volume > volume_avg
     ):
 
         if current["close"] > current["open"]:
@@ -464,114 +555,225 @@ def calculate_score(df):
         "price": float(
             current["close"]
         ),
-        "rsi": rsi
+        "rsi": rsi,
+        "atr": float(
+            current["atr"]
+        )
     }
 
 
 # =========================================================
-# ANALYZE ONE COIN
+# ANALYZE COIN
 # =========================================================
 
 def analyze_coin(symbol):
 
-    result = {
-        "Coin": symbol
-    }
-
-    total_long = 0
-    total_short = 0
-
     try:
+
+        results = {}
+
+        # =================================================
+        # ALL TIMEFRAMES
+        # =================================================
 
         for label, interval in TIMEFRAMES.items():
 
-            candles = get_candles(
+            df = get_candles(
                 symbol,
                 interval
             )
 
-            if candles is None:
+            if df is None:
 
                 return None
 
-            score = calculate_score(
-                candles
+            results[label] = (
+                analyze_timeframe(
+                    df
+                )
             )
 
-            total_long += score["long"]
-            total_short += score["short"]
-
-            result[
-                f"{label} LONG"
-            ] = score["long"]
-
-            result[
-                f"{label} SHORT"
-            ] = score["short"]
-
-            result[
-                f"{label} RSI"
-            ] = round(
-                score["rsi"],
-                1
-            )
-
-            result[
-                f"{label} DIR"
-            ] = (
-                "LONG"
-                if score["long"]
-                > score["short"]
-                else "SHORT"
-            )
-
-            result[
-                f"{label} PRICE"
-            ] = score["price"]
-
         # =================================================
-        # TOTAL
+        # TOTAL SCORE
         # =================================================
 
-        result[
-            "LONG SCORE"
-        ] = total_long
+        long_score = sum(
+            results[x]["long"]
+            for x in results
+        )
 
-        result[
-            "SHORT SCORE"
-        ] = total_short
-
-        result["PRICE"] = result[
-            "5M PRICE"
-        ]
+        short_score = sum(
+            results[x]["short"]
+            for x in results
+        )
 
         # =================================================
-        # FINAL SIGNAL
+        # TIMEFRAME DIRECTION
         # =================================================
 
-        if total_long > total_short:
+        long_tf = sum(
+            1
+            for x in results.values()
+            if x["long"] > x["short"]
+        )
 
-            result[
-                "SIGNAL"
-            ] = "🟢 LONG"
+        short_tf = sum(
+            1
+            for x in results.values()
+            if x["short"] > x["long"]
+        )
 
-        elif total_short > total_long:
+        # =================================================
+        # 5M PRICE
+        # =================================================
 
-            result[
-                "SIGNAL"
-            ] = "🔴 SHORT"
+        price = results[
+            "5M"
+        ]["price"]
 
-        else:
+        atr = results[
+            "5M"
+        ]["atr"]
 
-            result[
-                "SIGNAL"
-            ] = "⚪ NEUTRAL"
+        # =================================================
+        # FALLBACK ATR
+        # =================================================
 
-        return result
+        if (
+            not math.isfinite(atr)
+            or
+            atr <= 0
+        ):
+
+            atr = price * 0.01
+
+        # =================================================
+        # LONG ENTRY
+        # =================================================
+
+        long_entry_low = (
+            price -
+            atr * 0.25
+        )
+
+        long_entry_high = (
+            price +
+            atr * 0.05
+        )
+
+        # =================================================
+        # SHORT ENTRY
+        # =================================================
+
+        short_entry_low = (
+            price -
+            atr * 0.05
+        )
+
+        short_entry_high = (
+            price +
+            atr * 0.25
+        )
+
+        # =================================================
+        # TAKE PROFIT
+        # =================================================
+
+        long_tp = (
+            price +
+            atr * 1.50
+        )
+
+        short_tp = (
+            price -
+            atr * 1.50
+        )
+
+        return {
+
+            "Coin":
+                symbol,
+
+            "LONG SCORE":
+                long_score,
+
+            "SHORT SCORE":
+                short_score,
+
+            "LONG TF":
+                long_tf,
+
+            "SHORT TF":
+                short_tf,
+
+            "PRICE":
+                price,
+
+            "ATR":
+                atr,
+
+            "LONG ENTRY LOW":
+                long_entry_low,
+
+            "LONG ENTRY HIGH":
+                long_entry_high,
+
+            "LONG TP":
+                long_tp,
+
+            "SHORT ENTRY LOW":
+                short_entry_low,
+
+            "SHORT ENTRY HIGH":
+                short_entry_high,
+
+            "SHORT TP":
+                short_tp,
+
+            "RSI":
+                results[
+                    "5M"
+                ]["rsi"]
+        }
 
     except Exception:
 
         return None
+
+
+# =========================================================
+# FORMAT PRICE
+# =========================================================
+
+def format_price(value):
+
+    try:
+
+        value = float(
+            value
+        )
+
+    except Exception:
+
+        return "-"
+
+    if value >= 1000:
+
+        return f"{value:,.2f}"
+
+    if value >= 1:
+
+        return f"{value:.4f}"
+
+    if value >= 0.01:
+
+        return f"{value:.6f}"
+
+    if value >= 0.000001:
+
+        return f"{value:.8f}"
+
+    return f"{value:.10g}"
 
 
 # =========================================================
@@ -583,7 +785,7 @@ st.sidebar.header(
 )
 
 coin_limit = st.sidebar.selectbox(
-    "Jumlah coin yang discan",
+    "Jumlah coin",
     [
         10,
         20,
@@ -593,9 +795,8 @@ coin_limit = st.sidebar.selectbox(
     index=1
 )
 
-st.sidebar.info(
-    "Scanner mengambil kandidat terbaik "
-    "berdasarkan 5M + 15M + 30M + 1H."
+st.sidebar.caption(
+    "5M • 15M • 30M • 1H"
 )
 
 
@@ -608,7 +809,8 @@ with st.expander(
 ):
 
     if st.button(
-        "Test API"
+        "Test API",
+        use_container_width=True
     ):
 
         try:
@@ -616,40 +818,37 @@ with st.expander(
             test_api()
 
             st.success(
-                "API Twelve Data berhasil."
+                "✅ Twelve Data API aktif."
             )
 
         except Exception as e:
 
             st.error(
-                f"API gagal: {e}"
+                "❌ API gagal."
+            )
+
+            st.code(
+                str(e)
             )
 
 
 # =========================================================
-# SCAN BUTTON
+# SCAN MARKET
 # =========================================================
 
-scan = st.button(
+if st.button(
     "🔎 SCAN MARKET",
     use_container_width=True
-)
+):
 
-
-# =========================================================
-# SCANNER
-# =========================================================
-
-if scan:
-
-    # -----------------------------------------------------
+    # =====================================================
     # GET COINS
-    # -----------------------------------------------------
+    # =====================================================
 
     try:
 
         with st.spinner(
-            "Mengambil daftar cryptocurrency..."
+            "Mengambil daftar market..."
         ):
 
             coins = get_crypto_list()
@@ -657,37 +856,30 @@ if scan:
     except Exception as e:
 
         st.error(
-            "❌ Gagal mengambil daftar market."
+            "❌ Data market gagal diambil."
         )
 
         st.code(
             str(e)
         )
 
-        st.info(
-            "Kalau pesan di atas mengatakan "
-            "invalid API key / credits / access denied, "
-            "masalahnya ada pada API Twelve Data."
-        )
-
         st.stop()
 
-    # -----------------------------------------------------
-    # SHOW AVAILABLE
-    # -----------------------------------------------------
-
-    st.success(
-        f"Berhasil menemukan "
-        f"{len(coins)} pair crypto/USD."
-    )
-
-    # -----------------------------------------------------
+    # =====================================================
     # LIMIT
-    # -----------------------------------------------------
+    # =====================================================
 
     scan_coins = coins[
         :coin_limit
     ]
+
+    st.info(
+        f"Scanning {len(scan_coins)} coin..."
+    )
+
+    # =====================================================
+    # SCANNING
+    # =====================================================
 
     results = []
 
@@ -701,17 +893,13 @@ if scan:
         scan_coins
     )
 
-    # -----------------------------------------------------
-    # SCAN
-    # -----------------------------------------------------
-
-    for index, symbol in enumerate(
+    for i, symbol in enumerate(
         scan_coins
     ):
 
         status.write(
-            f"Scanning {symbol} "
-            f"({index + 1}/{total})"
+            f"🔎 {symbol} "
+            f"({i + 1}/{total})"
         )
 
         result = analyze_coin(
@@ -725,10 +913,16 @@ if scan:
             )
 
         progress.progress(
-            (index + 1) / total
+            int(
+                (
+                    (i + 1)
+                    /
+                    total
+                ) * 100
+            )
         )
 
-        # sedikit jeda
+        # Hindari request terlalu cepat
         time.sleep(
             0.15
         )
@@ -736,182 +930,163 @@ if scan:
     progress.empty()
     status.empty()
 
-    # -----------------------------------------------------
+    # =====================================================
     # NO RESULT
-    # -----------------------------------------------------
+    # =====================================================
 
     if not results:
 
         st.error(
-            "Tidak ada candle market yang berhasil "
-            "diperoleh."
+            "❌ Tidak ada coin yang berhasil dianalisis."
         )
 
         st.stop()
-
-    # -----------------------------------------------------
-    # DATAFRAME
-    # -----------------------------------------------------
 
     df = pd.DataFrame(
         results
     )
 
     # =====================================================
-    # TOP LONG
-    # =====================================================
-
-    top_long = (
-        df
-        .sort_values(
-            "LONG SCORE",
-            ascending=False
-        )
-        .head(5)
-    )
-
-    # =====================================================
-    # TOP SHORT
-    # =====================================================
-
-    top_short = (
-        df
-        .sort_values(
-            "SHORT SCORE",
-            ascending=False
-        )
-        .head(5)
-    )
-
-    # =====================================================
     # BEST LONG
     # =====================================================
 
-    st.divider()
-
-    st.subheader(
-        "🟢 TOP LONG"
-    )
-
-    long_columns = [
-        "Coin",
-        "LONG SCORE",
-        "SHORT SCORE",
-        "5M DIR",
-        "15M DIR",
-        "30M DIR",
-        "1H DIR",
-        "5M RSI",
-        "PRICE"
-    ]
-
-    st.dataframe(
-        top_long[
-            long_columns
-        ],
-        use_container_width=True,
-        hide_index=True
+    best_long = (
+        df
+        .sort_values(
+            by=[
+                "LONG TF",
+                "LONG SCORE"
+            ],
+            ascending=False
+        )
+        .iloc[0]
     )
 
     # =====================================================
     # BEST SHORT
     # =====================================================
 
-    st.subheader(
-        "🔴 TOP SHORT"
-    )
-
-    short_columns = [
-        "Coin",
-        "SHORT SCORE",
-        "LONG SCORE",
-        "5M DIR",
-        "15M DIR",
-        "30M DIR",
-        "1H DIR",
-        "5M RSI",
-        "PRICE"
-    ]
-
-    st.dataframe(
-        top_short[
-            short_columns
-        ],
-        use_container_width=True,
-        hide_index=True
+    best_short = (
+        df
+        .sort_values(
+            by=[
+                "SHORT TF",
+                "SHORT SCORE"
+            ],
+            ascending=False
+        )
+        .iloc[0]
     )
 
     # =====================================================
-    # STRONGEST SIGNAL
+    # TRADE SETUPS
     # =====================================================
-
-    best_long = top_long.iloc[0]
-
-    best_short = top_short.iloc[0]
 
     st.divider()
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.success(
-            f"🟢 BEST LONG\n\n"
-            f"**{best_long['Coin']}**\n\n"
-            f"Long score: "
-            f"{best_long['LONG SCORE']}\n\n"
-            f"Price: "
-            f"{best_long['PRICE']}\n\n"
-            f"RSI 5M: "
-            f"{best_long['5M RSI']}"
-        )
-
-    with col2:
-
-        st.error(
-            f"🔴 BEST SHORT\n\n"
-            f"**{best_short['Coin']}**\n\n"
-            f"Short score: "
-            f"{best_short['SHORT SCORE']}\n\n"
-            f"Price: "
-            f"{best_short['PRICE']}\n\n"
-            f"RSI 5M: "
-            f"{best_short['5M RSI']}"
-        )
+    st.header(
+        "🎯 Trade Setup"
+    )
 
     # =====================================================
-    # ALL RESULTS
+    # LONG
     # =====================================================
 
-    with st.expander(
-        "📊 Semua hasil scan"
-    ):
+    st.success(
+        f"""
+🟢 **LONG**
 
-        all_columns = [
-            "Coin",
-            "SIGNAL",
-            "LONG SCORE",
-            "SHORT SCORE",
-            "5M DIR",
-            "15M DIR",
-            "30M DIR",
-            "1H DIR",
-            "5M RSI",
-            "PRICE"
-        ]
+### {best_long["Coin"]}
 
-        st.dataframe(
-            df.sort_values(
-                "LONG SCORE",
-                ascending=False
-            )[
-                all_columns
+**Target Entry**
+
+`{format_price(best_long["LONG ENTRY LOW"])}`
+→
+`{format_price(best_long["LONG ENTRY HIGH"])}`
+
+**Take Profit**
+
+`{format_price(best_long["LONG TP"])}`
+
+**Konfirmasi**
+
+{int(best_long["LONG TF"])}/4 timeframe
+
+**Arah**
+
+LONG
+"""
+    )
+
+    # =====================================================
+    # SHORT
+    # =====================================================
+
+    st.error(
+        f"""
+🔴 **SHORT**
+
+### {best_short["Coin"]}
+
+**Target Entry**
+
+`{format_price(best_short["SHORT ENTRY LOW"])}`
+→
+`{format_price(best_short["SHORT ENTRY HIGH"])}`
+
+**Take Profit**
+
+`{format_price(best_short["SHORT TP"])}`
+
+**Konfirmasi**
+
+{int(best_short["SHORT TF"])}/4 timeframe
+
+**Arah**
+
+SHORT
+"""
+    )
+
+    # =====================================================
+    # ALL CANDIDATES
+    # =====================================================
+
+    st.divider()
+
+    st.subheader(
+        "📊 Semua Kandidat"
+    )
+
+    # =====================================================
+    # LONG CANDIDATES
+    # =====================================================
+
+    st.markdown(
+        "### 🟢 LONG"
+    )
+
+    long_df = (
+        df
+        .sort_values(
+            by=[
+                "LONG TF",
+                "LONG SCORE"
             ],
-            use_container_width=True,
-            hide_index=True
+            ascending=False
         )
+        .head(10)
+        .copy()
+    )
 
-    st.caption(
-        "Signal ini adalah ranking teknikal, "
-        "bukan jaminan harga akan naik/turun."
-        )
+    long_display = pd.DataFrame({
+
+        "Coin":
+            long_df["Coin"],
+
+        "Target Entry":
+            long_df.apply(
+                lambda row:
+                f"{format_price(row['LONG ENTRY LOW'])} "
+                f"→ "
+             
