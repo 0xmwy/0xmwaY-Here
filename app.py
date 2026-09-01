@@ -36,16 +36,14 @@ st.title("⚡ 0xmwY Kraken")
 st.caption("pengembang : Lutfi Andreyansah")
 
 st.markdown(
-    """
-    > **"Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"**
-    """
+    '**"Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"**'
 )
 
 st.divider()
 
 
 # =========================================================
-# API
+# API REQUEST
 # =========================================================
 
 def api_get(endpoint, params=None):
@@ -72,7 +70,7 @@ def api_get(endpoint, params=None):
 
 
 # =========================================================
-# GET PAIRS
+# GET USDT SWAP PAIRS
 # =========================================================
 
 @st.cache_data(ttl=1800)
@@ -99,11 +97,6 @@ def get_symbols():
 
         if inst_id:
             symbols.append(inst_id)
-
-    if not symbols:
-        raise Exception(
-            "Tidak ada pair USDT yang ditemukan."
-        )
 
     return sorted(symbols)
 
@@ -154,7 +147,7 @@ def get_candles(inst_id, bar):
 
 
 # =========================================================
-# BOLLINGER CALCULATION
+# BOLLINGER BANDS
 # =========================================================
 
 def calculate_bands(df):
@@ -218,7 +211,9 @@ def analyze_timeframe(df):
     long_signal = False
     short_signal = False
 
+    # -----------------------------------------------------
     # LONG
+    # -----------------------------------------------------
 
     if (
         previous_close <= previous_lower
@@ -232,7 +227,9 @@ def analyze_timeframe(df):
     ):
         long_signal = True
 
+    # -----------------------------------------------------
     # SHORT
+    # -----------------------------------------------------
 
     if (
         previous_close >= previous_upper
@@ -308,7 +305,9 @@ def analyze_pair(inst_id):
         if band_width <= 0:
             return None
 
-        # LONG
+        # -------------------------------------------------
+        # LONG OUTLOOK
+        # -------------------------------------------------
 
         long_entry_low = lower
         long_entry_high = price
@@ -321,7 +320,9 @@ def analyze_pair(inst_id):
                 + band_width * 0.50
             )
 
-        # SHORT
+        # -------------------------------------------------
+        # SHORT OUTLOOK
+        # -------------------------------------------------
 
         short_entry_low = price
         short_entry_high = upper
@@ -334,7 +335,9 @@ def analyze_pair(inst_id):
                 - band_width * 0.50
             )
 
+        # -------------------------------------------------
         # DIRECTION
+        # -------------------------------------------------
 
         if long_tf > short_tf:
             direction = "LONG"
@@ -351,13 +354,11 @@ def analyze_pair(inst_id):
         )
 
         return {
-
             "Coin": display_pair,
-
+            "InstID": inst_id,
             "Direction": direction,
 
             "Long TF": long_tf,
-
             "Short TF": short_tf,
 
             "Price": price,
@@ -599,16 +600,23 @@ def show_tradingview_chart(
 
 
 # =========================================================
+# SESSION STATE
+# =========================================================
+
+if "scan_results" not in st.session_state:
+    st.session_state.scan_results = []
+
+if "scan_done" not in st.session_state:
+    st.session_state.scan_done = False
+
+
+# =========================================================
 # LOAD MARKET
 # =========================================================
 
 try:
 
     symbols = get_symbols()
-
-    st.info(
-        f"Ditemukan **{len(symbols)} pair USDT**."
-    )
 
 except Exception as e:
 
@@ -641,7 +649,7 @@ scan_limit = st.sidebar.selectbox(
 )
 
 st.sidebar.caption(
-    "USDT Perpetual"
+    f"{len(symbols)} pair USDT tersedia"
 )
 
 st.sidebar.caption(
@@ -650,46 +658,7 @@ st.sidebar.caption(
 
 
 # =========================================================
-# TRADINGVIEW
-# =========================================================
-
-st.divider()
-
-st.header("📈 Live Chart")
-
-chart_pair = st.selectbox(
-    "Pilih pair",
-    symbols,
-    format_func=lambda x:
-        x.replace(
-            "-SWAP",
-            ""
-        ),
-    key="tv_pair"
-)
-
-chart_tf = st.selectbox(
-    "Timeframe",
-    [
-        "15M",
-        "30M",
-        "1H"
-    ],
-    key="tv_timeframe"
-)
-
-show_tradingview_chart(
-    chart_pair,
-    chart_tf
-)
-
-st.caption(
-    f"{chart_pair.replace('-SWAP', '')} • {chart_tf}"
-)
-
-
-# =========================================================
-# SCAN BUTTON
+# SCAN
 # =========================================================
 
 if st.button(
@@ -728,15 +697,27 @@ if st.button(
             (i + 1) / total
         )
 
-        time.sleep(0.08)
+        time.sleep(0.05)
 
     progress.empty()
     status.empty()
 
+    st.session_state.scan_results = results
+    st.session_state.scan_done = True
+
+
+# =========================================================
+# MATCHING SYSTEM
+# =========================================================
+
+if st.session_state.scan_done:
+
+    results = st.session_state.scan_results
+
     if not results:
 
         st.warning(
-            "Tidak ada data yang berhasil dianalisis."
+            "Tidak ada data market yang berhasil dianalisis."
         )
 
         st.stop()
@@ -745,116 +726,194 @@ if st.button(
 
 
     # =====================================================
-    # LONG
+    # SEPARATE LONG / SHORT
     # =====================================================
 
     long_df = df[
         df["Long TF"] > 0
     ].copy()
 
-    long_df = (
-        long_df
-        .sort_values(
-            by="Long TF",
-            ascending=False
-        )
-    )
-
-
-    # =====================================================
-    # SHORT
-    # =====================================================
-
     short_df = df[
         df["Short TF"] > 0
     ].copy()
 
-    short_df = (
-        short_df
-        .sort_values(
-            by="Short TF",
-            ascending=False
-        )
+
+    long_df = long_df.sort_values(
+        by="Long TF",
+        ascending=False
+    )
+
+    short_df = short_df.sort_values(
+        by="Short TF",
+        ascending=False
     )
 
 
     # =====================================================
-    # TRADE SETUP
+    # MATCHING SELECTOR
     # =====================================================
 
     st.divider()
 
-    st.header("🎯 Trade Setup")
+    st.header(
+        "🎯 Trade Setup"
+    )
 
-
-    # =====================================================
-    # OUTLOOK LONG
-    # =====================================================
+    signal_options = []
 
     if len(long_df) > 0:
+        signal_options.append(
+            "LONG"
+        )
 
-        best_long = long_df.iloc[0]
+    if len(short_df) > 0:
+        signal_options.append(
+            "SHORT"
+        )
+
+    if not signal_options:
+
+        st.info(
+            "Belum ada signal LONG atau SHORT."
+        )
+
+        st.stop()
+
+
+    selected_signal = st.radio(
+        "Pilih signal",
+        signal_options,
+        horizontal=True
+    )
+
+
+    # =====================================================
+    # SELECT DATASET
+    # =====================================================
+
+    if selected_signal == "LONG":
+
+        selected_df = long_df
+
+    else:
+
+        selected_df = short_df
+
+
+    # =====================================================
+    # PAIR OPTIONS
+    # =====================================================
+
+    pair_options = (
+        selected_df["Coin"]
+        .tolist()
+    )
+
+
+    selected_pair = st.selectbox(
+        f"Pilih pair {selected_signal}",
+        pair_options
+    )
+
+
+    # =====================================================
+    # GET SELECTED RESULT
+    # =====================================================
+
+    selected_row = selected_df[
+        selected_df["Coin"]
+        == selected_pair
+    ].iloc[0]
+
+
+    # =====================================================
+    # TIMEFRAME CHART
+    # =====================================================
+
+    chart_tf = st.selectbox(
+        "Timeframe TradingView",
+        [
+            "15M",
+            "30M",
+            "1H"
+        ]
+    )
+
+
+    # =====================================================
+    # SELECTED SETUP
+    # =====================================================
+
+    st.divider()
+
+
+    if selected_signal == "LONG":
 
         st.success(
             f"""
 🟢 **OUTLOOK LONG**
 
-### {best_long["Coin"]}
+### {selected_row["Coin"]}
 
 **Outlook Long**
 
-`{format_price(best_long["Long Entry Low"])} - {format_price(best_long["Long Entry High"])}`
+`{format_price(selected_row["Long Entry Low"])} - {format_price(selected_row["Long Entry High"])}`
 
 **Take Profit**
 
-`{format_price(best_long["Long TP"])}`
+`{format_price(selected_row["Long TP"])}`
 
 **Konfirmasi**
 
-{int(best_long["Long TF"])}/3 timeframe
+{int(selected_row["Long TF"])}/3 timeframe
 """
         )
 
     else:
-
-        st.info(
-            "Belum ada signal LONG."
-        )
-
-
-    # =====================================================
-    # OUTLOOK SHORT
-    # =====================================================
-
-    if len(short_df) > 0:
-
-        best_short = short_df.iloc[0]
 
         st.error(
             f"""
 🔴 **OUTLOOK SHORT**
 
-### {best_short["Coin"]}
+### {selected_row["Coin"]}
 
 **Outlook Short**
 
-`{format_price(best_short["Short Entry Low"])} - {format_price(best_short["Short Entry High"])}`
+`{format_price(selected_row["Short Entry Low"])} - {format_price(selected_row["Short Entry High"])}`
 
 **Take Profit**
 
-`{format_price(best_short["Short TP"])}`
+`{format_price(selected_row["Short TP"])}`
 
 **Konfirmasi**
 
-{int(best_short["Short TF"])}/3 timeframe
+{int(selected_row["Short TF"])}/3 timeframe
 """
         )
 
-    else:
 
-        st.info(
-            "Belum ada signal SHORT."
-        )
+    # =====================================================
+    # MATCHED TRADINGVIEW
+    # =====================================================
+
+    st.divider()
+
+    st.header(
+        "📈 TradingView"
+    )
+
+    st.caption(
+        f"{selected_pair} • {selected_signal} • {chart_tf}"
+    )
+
+    selected_inst_id = selected_row[
+        "InstID"
+    ]
+
+    show_tradingview_chart(
+        selected_inst_id,
+        chart_tf
+    )
 
 
     # =====================================================
@@ -886,20 +945,24 @@ if st.button(
                 ),
 
             "Take Profit":
-                long_df["Long TP"].apply(
+                long_df[
+                    "Long TP"
+                ].apply(
                     format_price
                 ),
 
             "Confirm":
                 (
-                    long_df["Long TF"]
+                    long_df[
+                        "Long TF"
+                    ]
                     .astype(str)
                     + "/3"
                 )
         })
 
         st.dataframe(
-            display_long.head(20),
+            display_long.head(30),
             use_container_width=True,
             hide_index=True
         )
@@ -933,75 +996,4 @@ if st.button(
                         f"{format_price(row['Short Entry Low'])}"
                         f" - "
                         f"{format_price(row['Short Entry High'])}"
-                    ),
-                    axis=1
-                ),
-
-            "Take Profit":
-                short_df["Short TP"].apply(
-                    format_price
-                ),
-
-            "Confirm":
-                (
-                    short_df["Short TF"]
-                    .astype(str)
-                    + "/3"
-                )
-        })
-
-        st.dataframe(
-            display_short.head(20),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    else:
-
-        st.write(
-            "Tidak ada kandidat SHORT."
-        )
-
-
-    # =====================================================
-    # TIMEFRAME DETAIL
-    # =====================================================
-
-    with st.expander(
-        "📊 Detail timeframe"
-    ):
-
-        detail = df[
-            [
-                "Coin",
-                "Direction",
-                "15M",
-                "30M",
-                "1H",
-                "Long TF",
-                "Short TF",
-                "Price"
-            ]
-        ].copy()
-
-        detail["Price"] = (
-            detail["Price"]
-            .apply(format_price)
-        )
-
-        st.dataframe(
-            detail,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-# =========================================================
-# FOOTER
-# =========================================================
-
-st.divider()
-
-st.caption(
-    "Signal bersifat teknikal dan bukan jaminan profit. DYOR."
 )
