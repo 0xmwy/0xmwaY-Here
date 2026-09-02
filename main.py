@@ -1,12 +1,9 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta, timezone
-
-# =========================================================
-# CONFIG
-# =========================================================
 
 st.set_page_config(
     page_title="0xmwY Kraken",
@@ -16,158 +13,91 @@ st.set_page_config(
 
 BASE = "https://www.okx.com"
 DB = "screening_history.db"
-
-TIMEFRAMES = {
-    "15M": "15m",
-    "30M": "30m",
-    "1H": "1H"
-}
-
+BARS = {"15M": "15m", "30M": "30m", "1H": "1H"}
 MAX_MOVER = 12
 
-# =========================================================
+
+# =========================
 # STYLE
-# =========================================================
+# =========================
 
 st.markdown("""
 <style>
-.block-container {
-    padding-top: 2rem;
-}
-
-.outlook-card {
-    border: 1px solid rgba(128,128,128,.25);
-    border-radius: 12px;
-    padding: 14px;
-    margin-bottom: 8px;
-}
-
-.pair-title {
-    font-size: 22px;
-    font-weight: 700;
-}
-
-.small-text {
-    font-size: 14px;
-    opacity: .8;
+.block-container{padding-top:2rem}
+.card{
+    border:1px solid rgba(128,128,128,.25);
+    border-radius:12px;
+    padding:15px;
+    margin-bottom:10px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# =========================================================
-# HEADER
-# =========================================================
-
 st.title("0xmwY Kraken")
+st.caption("pengembang : Lutfi Andreyansah")
+st.caption('"Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"')
 
-st.caption(
-    "pengembang : Lutfi Andreyansah"
-)
 
-st.caption(
-    '"Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"'
-)
-
-# =========================================================
+# =========================
 # DATABASE
-# =========================================================
+# =========================
 
-def db():
+def conn():
     return sqlite3.connect(DB)
 
 
 def init_db():
-
-    con = db()
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            pair TEXT,
-            outlook TEXT,
-            movement REAL,
-            volatility REAL,
-            entry_low REAL,
-            entry_high REAL,
-            tp REAL,
-            confidence REAL,
-            sl REAL,
-            status TEXT DEFAULT 'OPEN',
-            pnl_pct REAL DEFAULT 0,
-            resolved_at TEXT
-        )
+    c = conn()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        pair TEXT,
+        outlook TEXT,
+        movement REAL,
+        volatility REAL,
+        entry_low REAL,
+        entry_high REAL,
+        tp REAL,
+        sl REAL,
+        confidence REAL,
+        status TEXT DEFAULT 'OPEN',
+        pnl_pct REAL DEFAULT 0,
+        resolved_at TEXT
+    )
     """)
-
-    existing = [
-        row[1]
-        for row in con.execute(
-            "PRAGMA table_info(history)"
-        ).fetchall()
-    ]
-
-    new_columns = [
-        ("sl", "REAL"),
-        ("status", "TEXT DEFAULT 'OPEN'"),
-        ("pnl_pct", "REAL DEFAULT 0"),
-        ("resolved_at", "TEXT")
-    ]
-
-    for name, dtype in new_columns:
-
-        if name not in existing:
-
-            con.execute(
-                f"ALTER TABLE history ADD COLUMN {name} {dtype}"
-            )
-
-    con.commit()
-    con.close()
+    c.commit()
+    c.close()
 
 
 def clean_db():
-
-    cutoff = (
+    cut = (
         datetime.now(timezone.utc)
         - timedelta(hours=24)
     ).isoformat()
 
-    con = db()
-
-    con.execute(
+    c = conn()
+    c.execute(
         "DELETE FROM history WHERE timestamp < ?",
-        (cutoff,)
+        (cut,)
     )
-
-    con.commit()
-    con.close()
+    c.commit()
+    c.close()
 
 
 def save_results(results):
-
     if not results:
         return
 
-    con = db()
+    c = conn()
 
     for x in results:
-
-        con.execute("""
-            INSERT INTO history (
-                timestamp,
-                pair,
-                outlook,
-                movement,
-                volatility,
-                entry_low,
-                entry_high,
-                tp,
-                confidence,
-                sl,
-                status,
-                pnl_pct
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', 0)
+        c.execute("""
+        INSERT INTO history(
+            timestamp,pair,outlook,movement,volatility,
+            entry_low,entry_high,tp,sl,confidence
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?)
         """, (
             x["timestamp"],
             x["pair"],
@@ -177,63 +107,41 @@ def save_results(results):
             x["entry_low"],
             x["entry_high"],
             x["tp"],
-            x["confidence"],
-            x["sl"]
+            x["sl"],
+            x["confidence"]
         ))
 
-    con.commit()
-    con.close()
+    c.commit()
+    c.close()
 
 
 def get_history():
-
-    con = db()
+    c = conn()
 
     df = pd.read_sql_query(
-        """
-        SELECT
-            id,
-            timestamp,
-            pair,
-            outlook,
-            movement,
-            volatility,
-            entry_low,
-            entry_high,
-            tp,
-            confidence,
-            sl,
-            status,
-            pnl_pct,
-            resolved_at
-        FROM history
-        ORDER BY timestamp DESC
-        """,
-        con
+        "SELECT * FROM history ORDER BY timestamp DESC",
+        c
     )
 
-    con.close()
-
+    c.close()
     return df
 
 
 init_db()
 clean_db()
 
-# =========================================================
+
+# =========================
 # API
-# =========================================================
+# =========================
 
 def api(path, params):
-
     try:
-
         r = requests.get(
             BASE + path,
             params=params,
             timeout=15
         )
-
         r.raise_for_status()
 
         data = r.json()
@@ -246,13 +154,13 @@ def api(path, params):
     except Exception:
         return None
 
-# =========================================================
-# TICKERS
-# =========================================================
+
+# =========================
+# MARKET DATA
+# =========================
 
 @st.cache_data(ttl=30)
-def get_tickers():
-
+def tickers():
     data = api(
         "/api/v5/market/tickers",
         {"instType": "SWAP"}
@@ -264,73 +172,49 @@ def get_tickers():
     rows = []
 
     for x in data:
-
         inst = x.get("instId", "")
 
         if not inst.endswith("-USDT-SWAP"):
             continue
 
         try:
-
             price = float(x["last"])
             op = float(x["open24h"])
             high = float(x["high24h"])
             low = float(x["low24h"])
-
         except Exception:
             continue
 
         if price <= 0 or op <= 0:
             continue
 
-        movement = (
-            (price - op) / op
-        ) * 100
-
-        volatility = (
-            (high - low) / op
-        ) * 100
+        move = (price - op) / op * 100
+        vol = (high - low) / op * 100
 
         rows.append({
             "inst": inst,
             "pair": inst.replace("-SWAP", ""),
             "price": price,
-            "movement": movement,
-            "abs_move": abs(movement),
-            "volatility": volatility
+            "movement": move,
+            "abs_move": abs(move),
+            "volatility": vol
         })
 
     return pd.DataFrame(rows)
 
-# =========================================================
-# TOP MOVER
-# =========================================================
 
 def top_movers(df):
-
     if df.empty:
         return df
 
     df = df.copy()
 
-    move_max = max(
-        df["abs_move"].max(),
-        0.000001
-    )
-
-    vol_max = max(
-        df["volatility"].max(),
-        0.000001
-    )
+    mm = max(df.abs_move.max(), 0.000001)
+    vm = max(df.volatility.max(), 0.000001)
 
     df["score"] = (
-        (
-            df["abs_move"] / move_max
-        ) * 0.60
-        +
-        (
-            df["volatility"] / vol_max
-        ) * 0.40
+        df.abs_move / mm * .60
+        + df.volatility / vm * .40
     )
 
     return (
@@ -342,13 +226,9 @@ def top_movers(df):
         .reset_index(drop=True)
     )
 
-# =========================================================
-# CANDLES
-# =========================================================
 
 @st.cache_data(ttl=30)
 def candles(inst, bar):
-
     data = api(
         "/api/v5/market/candles",
         {
@@ -363,20 +243,17 @@ def candles(inst, bar):
 
     rows = []
 
-    for c in data:
-
+    for x in data:
         try:
-
             rows.append({
-                "open": float(c[1]),
-                "high": float(c[2]),
-                "low": float(c[3]),
-                "close": float(c[4]),
-                "volume": float(c[5])
+                "open": float(x[1]),
+                "high": float(x[2]),
+                "low": float(x[3]),
+                "close": float(x[4]),
+                "volume": float(x[5])
             })
-
         except Exception:
-            continue
+            pass
 
     if not rows:
         return pd.DataFrame()
@@ -387,39 +264,36 @@ def candles(inst, bar):
         .reset_index(drop=True)
     )
 
-# =========================================================
-# TIMEFRAME ANALYSIS
-# =========================================================
+
+# =========================
+# ANALYSIS
+# =========================
 
 def analyze_tf(df):
-
     if len(df) < 30:
         return None
 
-    close = df["close"]
+    close = df.close
 
-    ema9 = close.ewm(
+    e9 = close.ewm(
         span=9,
         adjust=False
     ).mean()
 
-    ema21 = close.ewm(
+    e21 = close.ewm(
         span=21,
         adjust=False
     ).mean()
 
     momentum = (
-        (
-            close.iloc[-1]
-            - close.iloc[-6]
-        )
+        (close.iloc[-1] - close.iloc[-6])
         / close.iloc[-6]
     ) * 100
 
     bull = 0
     bear = 0
 
-    if ema9.iloc[-1] > ema21.iloc[-1]:
+    if e9.iloc[-1] > e21.iloc[-1]:
         bull += 1
     else:
         bear += 1
@@ -434,19 +308,8 @@ def analyze_tf(df):
     else:
         bear += 1
 
-    if bull > bear:
-
-        side = "LONG"
-        confidence = (
-            bull / 3
-        ) * 100
-
-    else:
-
-        side = "SHORT"
-        confidence = (
-            bear / 3
-        ) * 100
+    side = "LONG" if bull > bear else "SHORT"
+    confidence = max(bull, bear) / 3 * 100
 
     high = close.tail(20).max()
     low = close.tail(20).min()
@@ -458,76 +321,60 @@ def analyze_tf(df):
 
     return {
         "side": side,
-        "confidence": confidence,
         "price": close.iloc[-1],
+        "confidence": confidence,
         "volatility": volatility
     }
 
-# =========================================================
-# COIN ANALYSIS
-# =========================================================
 
 def analyze_coin(inst):
+    results = {}
 
-    tf = {}
-
-    for name, bar in TIMEFRAMES.items():
-
+    for name, bar in BARS.items():
         df = candles(inst, bar)
+        r = analyze_tf(df)
 
-        result = analyze_tf(df)
+        if r:
+            results[name] = r
 
-        if result:
-            tf[name] = result
-
-    if len(tf) < 2:
+    if len(results) < 2:
         return None
 
     longs = sum(
-        x["side"] == "LONG"
-        for x in tf.values()
+        r["side"] == "LONG"
+        for r in results.values()
     )
 
     shorts = sum(
-        x["side"] == "SHORT"
-        for x in tf.values()
+        r["side"] == "SHORT"
+        for r in results.values()
     )
 
     if longs >= 2:
-
         side = "LONG"
-
     elif shorts >= 2:
-
         side = "SHORT"
-
     else:
-
         return None
 
-    price = list(
-        tf.values()
-    )[-1]["price"]
+    price = list(results.values())[-1]["price"]
 
     vol = sum(
-        x["volatility"]
-        for x in tf.values()
-    ) / len(tf)
+        r["volatility"]
+        for r in results.values()
+    ) / len(results)
 
     distance = max(
-        price * (vol / 100) * 0.20,
-        price * 0.001
+        price * vol / 100 * .20,
+        price * .001
     )
 
     if side == "LONG":
-
         entry_low = price - distance
         entry_high = price
         tp = price + distance * 2
         sl = price - distance
-
     else:
-
         entry_low = price
         entry_high = price + distance
         tp = price - distance * 2
@@ -535,12 +382,12 @@ def analyze_coin(inst):
 
     confidence = (
         max(longs, shorts)
-        / len(tf)
-    ) * 100
+        / len(results)
+        * 100
+    )
 
     return {
         "outlook": side,
-        "price": price,
         "entry_low": entry_low,
         "entry_high": entry_high,
         "tp": tp,
@@ -548,68 +395,39 @@ def analyze_coin(inst):
         "confidence": confidence
     }
 
-# =========================================================
+
+# =========================
 # SCREENING
-# =========================================================
+# =========================
 
 def screening():
+    df = tickers()
 
-    tickers = get_tickers()
-
-    if tickers.empty:
+    if df.empty:
         return []
 
-    movers = top_movers(tickers)
-
+    movers = top_movers(df)
     results = []
 
-    for _, mover in movers.iterrows():
+    for _, m in movers.iterrows():
+        r = analyze_coin(m["inst"])
 
-        result = analyze_coin(
-            mover["inst"]
-        )
-
-        if not result:
+        if not r:
             continue
 
         now = datetime.now(timezone.utc)
 
         results.append({
-
-            "timestamp":
-                now.isoformat(),
-
-            "time":
-                now.astimezone().strftime(
-                    "%H:%M:%S"
-                ),
-
-            "pair":
-                mover["pair"],
-
-            "outlook":
-                result["outlook"],
-
-            "movement":
-                mover["movement"],
-
-            "volatility":
-                mover["volatility"],
-
-            "entry_low":
-                result["entry_low"],
-
-            "entry_high":
-                result["entry_high"],
-
-            "tp":
-                result["tp"],
-
-            "sl":
-                result["sl"],
-
-            "confidence":
-                result["confidence"]
+            "timestamp": now.isoformat(),
+            "pair": m["pair"],
+            "outlook": r["outlook"],
+            "movement": m["movement"],
+            "volatility": m["volatility"],
+            "entry_low": r["entry_low"],
+            "entry_high": r["entry_high"],
+            "tp": r["tp"],
+            "sl": r["sl"],
+            "confidence": r["confidence"]
         })
 
     return sorted(
@@ -621,107 +439,61 @@ def screening():
         reverse=True
     )
 
-# =========================================================
-# RESOLVE SUCCESS / LOSS
-# =========================================================
+
+# =========================
+# CHECK SUCCESS / LOSS
+# =========================
 
 def resolve_history():
+    c = conn()
 
-    clean_db()
-
-    con = db()
-
-    rows = con.execute("""
-        SELECT
-            id,
-            pair,
-            outlook,
-            entry_low,
-            entry_high,
-            tp,
-            sl
-        FROM history
-        WHERE status = 'OPEN'
+    rows = c.execute("""
+    SELECT
+        id,pair,outlook,
+        entry_low,entry_high,tp,sl
+    FROM history
+    WHERE status='OPEN'
     """).fetchall()
 
     for row in rows:
-
-        (
-            trade_id,
-            pair,
-            outlook,
-            entry_low,
-            entry_high,
-            tp,
-            sl
-        ) = row
-
-        inst = pair + "-SWAP"
+        trade_id, pair, side, elo, ehi, tp, sl = row
 
         df = candles(
-            inst,
+            pair + "-SWAP",
             "15m"
         )
 
         if df.empty:
             continue
 
-        current_price = float(
-            df["close"].iloc[-1]
-        )
+        price = float(df.close.iloc[-1])
 
         result = None
         pnl = 0
 
-        if outlook == "LONG":
-
-            if current_price >= tp:
-
+        if side == "LONG":
+            if price >= tp:
                 result = "SUCCESS"
-
-                pnl = (
-                    (tp - entry_high)
-                    / entry_high
-                ) * 100
-
-            elif current_price <= sl:
-
+                pnl = (tp - ehi) / ehi * 100
+            elif price <= sl:
                 result = "LOSS"
+                pnl = (sl - ehi) / ehi * 100
 
-                pnl = (
-                    (sl - entry_high)
-                    / entry_high
-                ) * 100
-
-        elif outlook == "SHORT":
-
-            if current_price <= tp:
-
+        else:
+            if price <= tp:
                 result = "SUCCESS"
-
-                pnl = (
-                    (entry_low - tp)
-                    / entry_low
-                ) * 100
-
-            elif current_price >= sl:
-
+                pnl = (elo - tp) / elo * 100
+            elif price >= sl:
                 result = "LOSS"
-
-                pnl = (
-                    (entry_low - sl)
-                    / entry_low
-                ) * 100
+                pnl = (elo - sl) / elo * 100
 
         if result:
-
-            con.execute("""
-                UPDATE history
-                SET
-                    status = ?,
-                    pnl_pct = ?,
-                    resolved_at = ?
-                WHERE id = ?
+            c.execute("""
+            UPDATE history
+            SET status=?,
+                pnl_pct=?,
+                resolved_at=?
+            WHERE id=?
             """, (
                 result,
                 pnl,
@@ -731,72 +503,63 @@ def resolve_history():
                 trade_id
             ))
 
-    con.commit()
-    con.close()
+    c.commit()
+    c.close()
 
-# =========================================================
-# SESSION STATE
-# =========================================================
+
+# =========================
+# SESSION
+# =========================
 
 if "results" not in st.session_state:
     st.session_state.results = []
 
-if "last_scan" not in st.session_state:
-    st.session_state.last_scan = "-"
-
 if "selected_pair" not in st.session_state:
     st.session_state.selected_pair = None
 
-# =========================================================
-# SCREEN NOW
-# =========================================================
+if "last_scan" not in st.session_state:
+    st.session_state.last_scan = "-"
+
+
+# =========================
+# SCREEN BUTTON
+# =========================
 
 if st.button(
     "⚡ SCREEN NOW",
     use_container_width=True
 ):
-
     with st.spinner(
         "Mencari coin volatile..."
     ):
-
         result = screening()
 
     st.session_state.results = result
-
     st.session_state.last_scan = (
-        datetime.now().strftime(
-            "%H:%M:%S"
-        )
+        datetime.now().strftime("%H:%M:%S")
     )
 
-    if result:
-        save_results(result)
-
-    clean_db()
-
+    save_results(result)
     st.rerun()
 
 st.caption(
-    f"Last screening: "
-    f"{st.session_state.last_scan}"
+    f"Last screening: {st.session_state.last_scan}"
 )
 
-# =========================================================
-# RESOLVE OLD TRADES
-# =========================================================
+
+# =========================
+# UPDATE TRADE STATUS
+# =========================
 
 resolve_history()
 
-# =========================================================
-# CURRENT OUTLOOK
-# =========================================================
+
+# =========================
+# OUTLOOK
+# =========================
 
 st.divider()
-
-st.subheader(
-    "Current Outlook"
-)
+st.subheader("Current Outlook")
 
 results = st.session_state.results
 
@@ -810,140 +573,85 @@ shorts = [
     if x["outlook"] == "SHORT"
 ]
 
-col1, col2 = st.columns(2)
+left, right = st.columns(2)
 
-# =========================================================
-# LONG
-# =========================================================
 
-with col1:
+def show_card(x, key, icon):
+    with st.container(border=True):
 
-    st.markdown(
-        "### 🟢 OUTLOOK LONG"
-    )
+        st.markdown(
+            f"### {x['pair']}"
+        )
+
+        st.write(
+            f"**Entry:** "
+            f"{x['entry_low']:.8g}"
+            f" → "
+            f"{x['entry_high']:.8g}"
+        )
+
+        st.write(
+            f"**Take Profit:** "
+            f"{x['tp']:.8g}"
+        )
+
+        st.write(
+            f"**Stop Loss:** "
+            f"{x['sl']:.8g}"
+        )
+
+        st.caption(
+            f"Movement {x['movement']:.2f}%  •  "
+            f"Volatility {x['volatility']:.2f}%  •  "
+            f"Confidence {x['confidence']:.0f}%"
+        )
+
+        if st.button(
+            f"{icon} Open Chart • {x['pair']}",
+            key=key,
+            use_container_width=True
+        ):
+            st.session_state.selected_pair = x["pair"]
+            st.rerun()
+
+
+with left:
+    st.markdown("### 🟢 OUTLOOK LONG")
 
     if not longs:
-
-        st.info(
-            "Belum ada setup LONG."
-        )
+        st.info("Belum ada setup LONG.")
 
     for i, x in enumerate(longs):
-
-        st.container(
-            border=True
+        show_card(
+            x,
+            f"long_{i}_{x['pair']}",
+            "📈"
         )
 
-        st.markdown(
-            f"### {x['pair']}"
-        )
 
-        st.write(
-            f"**Entry:** "
-            f"{x['entry_low']:.8g}"
-            f" → "
-            f"{x['entry_high']:.8g}"
-        )
-
-        st.write(
-            f"**Take Profit:** "
-            f"{x['tp']:.8g}"
-        )
-
-        st.write(
-            f"**Stop Loss:** "
-            f"{x['sl']:.8g}"
-        )
-
-        st.caption(
-            f"Movement: {x['movement']:.2f}%  •  "
-            f"Volatility: {x['volatility']:.2f}%  •  "
-            f"Confidence: {x['confidence']:.0f}%"
-        )
-
-        if st.button(
-            f"📈 Open Chart • {x['pair']}",
-            key=f"long_chart_{i}_{x['pair']}",
-            use_container_width=True
-        ):
-
-            st.session_state.selected_pair = (
-                x["pair"]
-            )
-
-            st.rerun()
-
-# =========================================================
-# SHORT
-# =========================================================
-
-with col2:
-
-    st.markdown(
-        "### 🔴 OUTLOOK SHORT"
-    )
+with right:
+    st.markdown("### 🔴 OUTLOOK SHORT")
 
     if not shorts:
-
-        st.info(
-            "Belum ada setup SHORT."
-        )
+        st.info("Belum ada setup SHORT.")
 
     for i, x in enumerate(shorts):
-
-        st.container(
-            border=True
+        show_card(
+            x,
+            f"short_{i}_{x['pair']}",
+            "📉"
         )
 
-        st.markdown(
-            f"### {x['pair']}"
-        )
 
-        st.write(
-            f"**Entry:** "
-            f"{x['entry_low']:.8g}"
-            f" → "
-            f"{x['entry_high']:.8g}"
-        )
-
-        st.write(
-            f"**Take Profit:** "
-            f"{x['tp']:.8g}"
-        )
-
-        st.write(
-            f"**Stop Loss:** "
-            f"{x['sl']:.8g}"
-        )
-
-        st.caption(
-            f"Movement: {x['movement']:.2f}%  •  "
-            f"Volatility: {x['volatility']:.2f}%  •  "
-            f"Confidence: {x['confidence']:.0f}%"
-        )
-
-        if st.button(
-            f"📉 Open Chart • {x['pair']}",
-            key=f"short_chart_{i}_{x['pair']}",
-            use_container_width=True
-        ):
-
-            st.session_state.selected_pair = (
-                x["pair"]
-            )
-
-            st.rerun()
-
-# =========================================================
+# =========================
 # TRADINGVIEW
-# =========================================================
+# =========================
 
 if st.session_state.selected_pair:
 
     pair = st.session_state.selected_pair
 
     st.divider()
-
     st.subheader(
         f"Live Chart • {pair}"
     )
@@ -955,58 +663,39 @@ if st.session_state.selected_pair:
     )
 
     html = f"""
-    <div
-        id="tradingview_chart"
-        style="height:650px;width:100%;">
-    </div>
+    <div id="tv" style="height:650px;width:100%"></div>
 
-    <script src="https://s3.tradingview.com/tv.js">
-    </script>
+    <script src="https://s3.tradingview.com/tv.js"></script>
 
     <script>
-
     new TradingView.widget({{
-
-        "autosize": true,
-
-        "symbol": "{symbol}",
-
-        "interval": "15",
-
-        "timezone": "Asia/Jakarta",
-
-        "theme": "dark",
-
-        "style": "1",
-
-        "locale": "en",
-
-        "enable_publishing": false,
-
-        "hide_top_toolbar": false,
-
-        "hide_legend": false,
-
-        "save_image": false,
-
-        "container_id": "tradingview_chart"
-
+        autosize:true,
+        symbol:"{symbol}",
+        interval:"15",
+        timezone:"Asia/Jakarta",
+        theme:"dark",
+        style:"1",
+        locale:"en",
+        enable_publishing:false,
+        hide_top_toolbar:false,
+        hide_legend:false,
+        save_image:false,
+        container_id:"tv"
     }});
-
     </script>
     """
 
-    st.components.v1.html(
+    components.html(
         html,
         height=670
     )
 
-# =========================================================
-# HISTORY
-# =========================================================
+
+# =========================
+# HISTORY 24H
+# =========================
 
 st.divider()
-
 st.subheader(
     "Screening History — 24 Hours"
 )
@@ -1053,23 +742,193 @@ else:
         }
     )
 
-    display["Movement %"] = (
-        display["Movement %"].round(2)
-    )
-
-    display["Volatility %"] = (
-        display["Volatility %"].round(2)
-    )
+    for col in [
+        "Movement %",
+        "Volatility %",
+        "P/L %"
+    ]:
+        display[col] = display[col].round(2)
 
     display["Confidence %"] = (
         display["Confidence %"].round(0)
     )
 
-    display["P/L %"] = (
-        display["P/L %"].round(2)
-    )
-
     st.dataframe(
         display[
             [
-                "Time
+                "Time",
+                "Pair",
+                "Outlook",
+                "Movement %",
+                "Volatility %",
+                "Entry Low",
+                "Entry High",
+                "Take Profit",
+                "Stop Loss",
+                "Confidence %",
+                "Status",
+                "P/L %"
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# =========================
+# 24H PERFORMANCE
+# =========================
+
+st.divider()
+st.subheader("24H Performance")
+
+perf = get_history()
+
+if perf.empty:
+
+    st.info(
+        "Belum ada data performance."
+    )
+
+else:
+
+    success = perf[
+        perf.status == "SUCCESS"
+    ]
+
+    loss = perf[
+        perf.status == "LOSS"
+    ]
+
+    opened = perf[
+        perf.status == "OPEN"
+    ]
+
+    closed = len(success) + len(loss)
+
+    winrate = (
+        len(success) / closed * 100
+        if closed else 0
+    )
+
+    profit = success.pnl_pct.sum()
+    loss_total = loss.pnl_pct.sum()
+    net = profit + loss_total
+
+    a, b, c, d, e = st.columns(5)
+
+    a.metric("SUCCESS", len(success))
+    b.metric("LOSS", len(loss))
+    c.metric("WIN RATE", f"{winrate:.2f}%")
+    d.metric("PROFIT", f"+{profit:.2f}%")
+    e.metric("NET P/L", f"{net:+.2f}%")
+
+    st.caption(
+        f"Open trades: {len(opened)}"
+    )
+
+    # -------------------------
+    # SUCCESS
+    # -------------------------
+
+    st.markdown("### ✅ Pair Sukses")
+
+    if success.empty:
+
+        st.info(
+            "Belum ada pair yang sukses."
+        )
+
+    else:
+
+        s = success[
+            [
+                "pair",
+                "outlook",
+                "pnl_pct",
+                "resolved_at"
+            ]
+        ].copy()
+
+        s.columns = [
+            "Pair",
+            "Outlook",
+            "Profit %",
+            "Resolved"
+        ]
+
+        s["Profit %"] = s["Profit %"].round(2)
+
+        s["Resolved"] = (
+            pd.to_datetime(
+                s["Resolved"],
+                utc=True
+            )
+            .dt.tz_convert(
+                "Asia/Jakarta"
+            )
+            .dt.strftime("%H:%M:%S")
+        )
+
+        st.dataframe(
+            s,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # -------------------------
+    # LOSS
+    # -------------------------
+
+    st.markdown("### ❌ Pair Loss")
+
+    if loss.empty:
+
+        st.info(
+            "Belum ada pair yang loss."
+        )
+
+    else:
+
+        l = loss[
+            [
+                "pair",
+                "outlook",
+                "pnl_pct",
+                "resolved_at"
+            ]
+        ].copy()
+
+        l.columns = [
+            "Pair",
+            "Outlook",
+            "Loss %",
+            "Resolved"
+        ]
+
+        l["Loss %"] = l["Loss %"].round(2)
+
+        l["Resolved"] = (
+            pd.to_datetime(
+                l["Resolved"],
+                utc=True
+            )
+            .dt.tz_convert(
+                "Asia/Jakarta"
+            )
+            .dt.strftime("%H:%M:%S")
+        )
+
+        st.dataframe(
+            l,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+# =========================
+# FOOTER
+# =========================
+
+st.divider()
+st.caption("Informational scanner — DYOR.")
