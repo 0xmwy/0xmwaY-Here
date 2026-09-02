@@ -5,10 +5,6 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-# =========================================================
-# CONFIG
-# =========================================================
-
 st.set_page_config(
     page_title="0xmwY Kraken",
     page_icon="⚡",
@@ -28,7 +24,7 @@ MAX_MOVER = 12
 
 
 # =========================================================
-# STYLE
+# HEADER
 # =========================================================
 
 st.markdown("""
@@ -45,20 +41,8 @@ st.markdown("""
 .sub {
     opacity: .7;
 }
-
-.card {
-    padding: 16px;
-    border-radius: 12px;
-    border: 1px solid rgba(128,128,128,.3);
-    margin-bottom: 10px;
-}
 </style>
 """, unsafe_allow_html=True)
-
-
-# =========================================================
-# HEADER
-# =========================================================
 
 st.markdown(
     '<div class="title">0xmwY Kraken</div>',
@@ -79,13 +63,13 @@ st.caption(
 # DATABASE
 # =========================================================
 
-def db():
+def connect_db():
     return sqlite3.connect(DB)
 
 
 def init_db():
 
-    con = db()
+    con = connect_db()
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS history (
@@ -112,34 +96,29 @@ def init_db():
 
 def migrate_db():
 
-    con = db()
+    con = connect_db()
 
-    columns = [
-        row[1]
-        for row in con.execute(
+    cols = [
+        x[1]
+        for x in con.execute(
             "PRAGMA table_info(history)"
         ).fetchall()
     ]
 
-    if "sl" not in columns:
-        con.execute(
-            "ALTER TABLE history ADD COLUMN sl REAL"
-        )
+    additions = {
+        "sl": "REAL",
+        "status": "TEXT DEFAULT 'OPEN'",
+        "pnl_pct": "REAL DEFAULT 0",
+        "resolved_at": "TEXT"
+    }
 
-    if "status" not in columns:
-        con.execute(
-            "ALTER TABLE history ADD COLUMN status TEXT DEFAULT 'OPEN'"
-        )
+    for name, typ in additions.items():
 
-    if "pnl_pct" not in columns:
-        con.execute(
-            "ALTER TABLE history ADD COLUMN pnl_pct REAL DEFAULT 0"
-        )
+        if name not in cols:
 
-    if "resolved_at" not in columns:
-        con.execute(
-            "ALTER TABLE history ADD COLUMN resolved_at TEXT"
-        )
+            con.execute(
+                f"ALTER TABLE history ADD COLUMN {name} {typ}"
+            )
 
     con.commit()
     con.close()
@@ -152,7 +131,7 @@ def clean_db():
         - timedelta(hours=24)
     ).isoformat()
 
-    con = db()
+    con = connect_db()
 
     con.execute(
         "DELETE FROM history WHERE timestamp < ?",
@@ -168,7 +147,7 @@ def save_results(results):
     if not results:
         return
 
-    con = db()
+    con = connect_db()
 
     for x in results:
 
@@ -187,7 +166,10 @@ def save_results(results):
                 status,
                 pnl_pct
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', 0)
+            VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, 'OPEN', 0
+            )
         """, (
             x["timestamp"],
             x["pair"],
@@ -207,14 +189,10 @@ def save_results(results):
 
 def get_history():
 
-    con = db()
+    con = connect_db()
 
     df = pd.read_sql_query(
-        """
-        SELECT *
-        FROM history
-        ORDER BY timestamp DESC
-        """,
+        "SELECT * FROM history ORDER BY timestamp DESC",
         con
     )
 
@@ -295,11 +273,13 @@ def get_tickers():
             continue
 
         movement = (
-            (price - op) / op
+            (price - op)
+            / op
         ) * 100
 
         volatility = (
-            (high - low) / op
+            (high - low)
+            / op
         ) * 100
 
         rows.append({
@@ -336,13 +316,13 @@ def top_movers(df):
     )
 
     df["score"] = (
-        (
-            df["abs_move"] / move_max
-        ) * 0.60
+        df["abs_move"]
+        / move_max
+        * 0.60
         +
-        (
-            df["volatility"] / vol_max
-        ) * 0.40
+        df["volatility"]
+        / vol_max
+        * 0.40
     )
 
     return (
@@ -360,7 +340,7 @@ def top_movers(df):
 # =========================================================
 
 @st.cache_data(ttl=30)
-def candles(inst, bar):
+def get_candles(inst, bar):
 
     data = api(
         "/api/v5/market/candles",
@@ -390,7 +370,7 @@ def candles(inst, bar):
 
         except Exception:
 
-            continue
+            pass
 
     if not rows:
         return pd.DataFrame()
@@ -485,7 +465,10 @@ def analyze_coin(inst):
 
     for name, bar in TIMEFRAMES.items():
 
-        df = candles(inst, bar)
+        df = get_candles(
+            inst,
+            bar
+        )
 
         result = analyze_tf(df)
 
@@ -553,7 +536,6 @@ def analyze_coin(inst):
 
     return {
         "outlook": side,
-        "price": price,
         "entry_low": entry_low,
         "entry_high": entry_high,
         "tp": tp,
@@ -612,12 +594,12 @@ def screening():
 
 
 # =========================================================
-# RESOLVE PROFIT / LOSS
+# CHECK PROFIT / LOSS
 # =========================================================
 
 def resolve_history():
 
-    con = db()
+    con = connect_db()
 
     rows = con.execute("""
         SELECT
@@ -645,7 +627,7 @@ def resolve_history():
         if sl is None:
             continue
 
-        df = candles(
+        df = get_candles(
             pair + "-SWAP",
             "15m"
         )
@@ -657,14 +639,14 @@ def resolve_history():
             df["close"].iloc[-1]
         )
 
-        result = None
+        status = None
         pnl = 0
 
         if side == "LONG":
 
             if current >= tp:
 
-                result = "SUCCESS"
+                status = "SUCCESS"
 
                 pnl = (
                     (tp - entry_high)
@@ -673,7 +655,7 @@ def resolve_history():
 
             elif current <= sl:
 
-                result = "LOSS"
+                status = "LOSS"
 
                 pnl = (
                     (sl - entry_high)
@@ -684,7 +666,7 @@ def resolve_history():
 
             if current <= tp:
 
-                result = "SUCCESS"
+                status = "SUCCESS"
 
                 pnl = (
                     (entry_low - tp)
@@ -693,14 +675,14 @@ def resolve_history():
 
             elif current >= sl:
 
-                result = "LOSS"
+                status = "LOSS"
 
                 pnl = (
                     (entry_low - sl)
                     / entry_low
                 ) * 100
 
-        if result:
+        if status:
 
             con.execute("""
                 UPDATE history
@@ -710,7 +692,7 @@ def resolve_history():
                     resolved_at = ?
                 WHERE id = ?
             """, (
-                result,
+                status,
                 pnl,
                 datetime.now(
                     timezone.utc
@@ -720,9 +702,7 @@ def resolve_history():
 
     con.commit()
     con.close()
-
-
-# =========================================================
+    # =========================================================
 # SESSION
 # =========================================================
 
@@ -749,9 +729,9 @@ if st.button(
         "Mencari coin volatile..."
     ):
 
-        result = screening()
+        results = screening()
 
-    st.session_state.results = result
+    st.session_state.results = results
 
     st.session_state.last_scan = (
         datetime.now().strftime(
@@ -759,7 +739,7 @@ if st.button(
         )
     )
 
-    save_results(result)
+    save_results(results)
 
     clean_db()
 
@@ -773,7 +753,7 @@ st.caption(
 
 
 # =========================================================
-# CHECK RESULT
+# UPDATE PROFIT / LOSS
 # =========================================================
 
 resolve_history()
@@ -805,7 +785,7 @@ col1, col2 = st.columns(2)
 
 
 # =========================================================
-# CARD FUNCTION
+# CARD
 # =========================================================
 
 def show_card(x, key, icon):
@@ -912,7 +892,7 @@ with col2:
 
 
 # =========================================================
-# TRADINGVIEW
+# TRADINGVIEW LIVE CHART
 # =========================================================
 
 if st.session_state.selected_pair:
@@ -942,36 +922,20 @@ if st.session_state.selected_pair:
     </script>
 
     <script>
-
     new TradingView.widget({{
-
         "autosize": true,
-
         "symbol": "{symbol}",
-
         "interval": "15",
-
         "timezone": "Asia/Jakarta",
-
         "theme": "dark",
-
         "style": "1",
-
         "locale": "en",
-
         "enable_publishing": false,
-
         "hide_top_toolbar": false,
-
         "hide_legend": false,
-
         "save_image": false,
-
-        "container_id":
-            "tradingview_chart"
-
+        "container_id": "tradingview_chart"
     }});
-
     </script>
     """
 
@@ -982,7 +946,7 @@ if st.session_state.selected_pair:
 
 
 # =========================================================
-# HISTORY 24H
+# HISTORY 24 HOURS
 # =========================================================
 
 st.divider()
@@ -1094,4 +1058,204 @@ if perf.empty:
 else:
 
     success = perf[
-        perf["status"] == "S
+        perf["status"] == "SUCCESS"
+    ]
+
+    losses = perf[
+        perf["status"] == "LOSS"
+    ]
+
+    opened = perf[
+        perf["status"] == "OPEN"
+    ]
+
+    closed = (
+        len(success)
+        + len(losses)
+    )
+
+    winrate = (
+        len(success)
+        / closed
+        * 100
+        if closed
+        else 0
+    )
+
+    total_profit = (
+        success["pnl_pct"].sum()
+    )
+
+    total_loss = (
+        losses["pnl_pct"].sum()
+    )
+
+    net_pnl = (
+        total_profit
+        + total_loss
+    )
+
+    a, b, c, d, e = st.columns(5)
+
+    with a:
+
+        st.metric(
+            "SUCCESS",
+            len(success)
+        )
+
+    with b:
+
+        st.metric(
+            "LOSS",
+            len(losses)
+        )
+
+    with c:
+
+        st.metric(
+            "WIN RATE",
+            f"{winrate:.2f}%"
+        )
+
+    with d:
+
+        st.metric(
+            "PROFIT",
+            f"+{total_profit:.2f}%"
+        )
+
+    with e:
+
+        st.metric(
+            "NET P/L",
+            f"{net_pnl:+.2f}%"
+        )
+
+    st.caption(
+        f"Open trades: {len(opened)}"
+    )
+
+
+    # =====================================================
+    # SUCCESS PAIRS
+    # =====================================================
+
+    st.markdown(
+        "### ✅ Pair Sukses"
+    )
+
+    if success.empty:
+
+        st.info(
+            "Belum ada pair yang mencapai TP."
+        )
+
+    else:
+
+        s = success[
+            [
+                "pair",
+                "outlook",
+                "pnl_pct",
+                "resolved_at"
+            ]
+        ].copy()
+
+        s.columns = [
+            "Pair",
+            "Outlook",
+            "Profit %",
+            "Resolved"
+        ]
+
+        s["Profit %"] = (
+            s["Profit %"].round(2)
+        )
+
+        s["Resolved"] = (
+            pd.to_datetime(
+                s["Resolved"],
+                utc=True
+            )
+            .dt.tz_convert(
+                "Asia/Jakarta"
+            )
+            .dt.strftime(
+                "%H:%M:%S"
+            )
+        )
+
+        st.dataframe(
+            s,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+    # =====================================================
+    # LOSS PAIRS
+    # =====================================================
+
+    st.markdown(
+        "### ❌ Pair Loss"
+    )
+
+    if losses.empty:
+
+        st.info(
+            "Belum ada pair yang terkena SL."
+        )
+
+    else:
+
+        l = losses[
+            [
+                "pair",
+                "outlook",
+                "pnl_pct",
+                "resolved_at"
+            ]
+        ].copy()
+
+        l.columns = [
+            "Pair",
+            "Outlook",
+            "Loss %",
+            "Resolved"
+        ]
+
+        l["Loss %"] = (
+            l["Loss %"].round(2)
+        )
+
+        l["Resolved"] = (
+            pd.to_datetime(
+                l["Resolved"],
+                utc=True
+            )
+            .dt.tz_convert(
+                "Asia/Jakarta"
+            )
+            .dt.strftime(
+                "%H:%M:%S"
+            )
+        )
+
+        st.dataframe(
+            l,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.divider()
+
+st.caption(
+    "Informational scanner — DYOR."
+        )
+    
