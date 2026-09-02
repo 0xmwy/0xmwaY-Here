@@ -1,26 +1,26 @@
 import streamlit as st
 import requests
 import pandas as pd
-import numpy as np
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from html import escape
 
-import streamlit.components.v1 as components
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 
+st.set_page_config(
+    page_title="0xmwY Kraken",
+    page_icon="⚡",
+    layout="wide"
+)
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-st.set_page_config(
-    page_title="0xmwY Kraken",
-    page_icon="📊",
-    layout="wide"
-)
-
-OKX_BASE = "https://www.okx.com"
-
+API_BASE = "https://www.okx.com"
 DB_FILE = "screening_history.db"
 
 TIMEFRAMES = {
@@ -29,48 +29,121 @@ TIMEFRAMES = {
     "1H": "1H"
 }
 
-# Token dan jumlah screening
-TOKENS = {
-    "KRAKEN-001": 100,
-    "KRAKEN-002": 50,
-    "KRAKEN-003": 25,
-}
+MAX_COINS_TO_ANALYZE = 15
 
+# ============================================================
+# CUSTOM CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    .main-title {
+        font-size: 42px;
+        font-weight: 800;
+        margin-bottom: 0px;
+    }
+
+    .subtitle {
+        font-size: 16px;
+        opacity: 0.75;
+        margin-bottom: 4px;
+    }
+
+    .quote {
+        font-size: 14px;
+        font-style: italic;
+        opacity: 0.65;
+        margin-bottom: 25px;
+    }
+
+    .outlook-long {
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid rgba(0, 180, 100, 0.35);
+        margin-bottom: 10px;
+    }
+
+    .outlook-short {
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid rgba(220, 70, 70, 0.35);
+        margin-bottom: 10px;
+    }
+
+    .small-text {
+        font-size: 13px;
+        opacity: 0.7;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown(
+    '<div class="main-title">0xmwY Kraken</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">pengembang : Lutfi Andreyansah</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="quote">"Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"</div>',
+    unsafe_allow_html=True
+)
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
+def get_connection():
+    return sqlite3.connect(DB_FILE, check_same_thread=False)
 
-    conn.execute("""
+
+def init_database():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS screening_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
-            timestamp_unix INTEGER NOT NULL,
             pair TEXT NOT NULL,
+            outlook TEXT NOT NULL,
             movement REAL,
             volatility REAL,
-            volume REAL,
-            outlook TEXT,
             entry_low REAL,
             entry_high REAL,
-            take_profit REAL
+            take_profit REAL,
+            confidence REAL
         )
-    """)
+        """
+    )
 
     conn.commit()
     conn.close()
 
 
 def cleanup_old_history():
-    cutoff = int(time.time()) - (24 * 60 * 60)
+    conn = get_connection()
 
-    conn = sqlite3.connect(DB_FILE)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=24)
+    ).isoformat()
 
     conn.execute(
-        "DELETE FROM screening_history WHERE timestamp_unix < ?",
+        """
+        DELETE FROM screening_history
+        WHERE timestamp < ?
+        """,
         (cutoff,)
     )
 
@@ -78,73 +151,85 @@ def cleanup_old_history():
     conn.close()
 
 
-def save_history(result):
-    conn = sqlite3.connect(DB_FILE)
+def save_history(results):
+    if not results:
+        return
 
-    conn.execute("""
-        INSERT INTO screening_history (
-            timestamp,
-            timestamp_unix,
-            pair,
-            movement,
-            volatility,
-            volume,
-            outlook,
-            entry_low,
-            entry_high,
-            take_profit
+    conn = get_connection()
+
+    for item in results:
+        conn.execute(
+            """
+            INSERT INTO screening_history
+            (
+                timestamp,
+                pair,
+                outlook,
+                movement,
+                volatility,
+                entry_low,
+                entry_high,
+                take_profit,
+                confidence
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["timestamp"],
+                item["pair"],
+                item["outlook"],
+                item["movement"],
+                item["volatility"],
+                item["entry_low"],
+                item["entry_high"],
+                item["take_profit"],
+                item["confidence"]
+            )
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        result["timestamp"],
-        result["timestamp_unix"],
-        result["pair"],
-        result["movement"],
-        result["volatility"],
-        result["volume"],
-        result["outlook"],
-        result["entry_low"],
-        result["entry_high"],
-        result["take_profit"]
-    ))
 
     conn.commit()
     conn.close()
 
 
-def get_history():
-    cleanup_old_history()
+def load_history():
+    conn = get_connection()
 
-    conn = sqlite3.connect(DB_FILE)
-
-    df = pd.read_sql_query("""
+    df = pd.read_sql_query(
+        """
         SELECT
             timestamp,
             pair,
+            outlook,
             movement,
             volatility,
-            volume,
-            outlook,
             entry_low,
             entry_high,
-            take_profit
+            take_profit,
+            confidence
         FROM screening_history
-        ORDER BY timestamp_unix DESC
-    """, conn)
+        ORDER BY timestamp DESC
+        """,
+        conn
+    )
 
     conn.close()
 
     return df
 
 
+init_database()
+cleanup_old_history()
+
 # ============================================================
-# API REQUEST
+# API FUNCTIONS
 # ============================================================
 
-def okx_get(endpoint, params=None):
+def api_get(endpoint, params=None):
+    url = API_BASE + endpoint
+
     try:
         response = requests.get(
-            OKX_BASE + endpoint,
+            url,
             params=params,
             timeout=15
         )
@@ -163,13 +248,12 @@ def okx_get(endpoint, params=None):
 
 
 # ============================================================
-# GET ALL USDT SWAPS
+# GET SWAP INSTRUMENTS
 # ============================================================
 
 @st.cache_data(ttl=300)
-def get_symbols():
-
-    data = okx_get(
+def get_instruments():
+    data = api_get(
         "/api/v5/public/instruments",
         {
             "instType": "SWAP"
@@ -179,34 +263,28 @@ def get_symbols():
     if not data:
         return []
 
-    symbols = []
+    pairs = []
 
     for item in data:
+        inst_id = item.get("instId", "")
+        state = item.get("state", "")
 
-        if item.get("state") != "live":
-            continue
+        if (
+            inst_id.endswith("-USDT-SWAP")
+            and state == "live"
+        ):
+            pairs.append(inst_id)
 
-        if item.get("settleCcy") != "USDT":
-            continue
-
-        inst_id = item.get("instId")
-
-        if not inst_id:
-            continue
-
-        symbols.append(inst_id)
-
-    return symbols
+    return pairs
 
 
 # ============================================================
 # GET TICKERS
 # ============================================================
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=30)
 def get_tickers():
-
-    data = okx_get(
+    data = api_get(
         "/api/v5/market/tickers",
         {
             "instType": "SWAP"
@@ -219,7 +297,6 @@ def get_tickers():
     rows = []
 
     for item in data:
-
         inst_id = item.get("instId", "")
 
         if not inst_id.endswith("-USDT-SWAP"):
@@ -230,26 +307,33 @@ def get_tickers():
             open24 = float(item.get("open24h", 0))
             high24 = float(item.get("high24h", 0))
             low24 = float(item.get("low24h", 0))
-            volume = float(item.get("vol24h", 0))
+            volume = float(item.get("volCcy24h", 0))
 
             if last <= 0 or open24 <= 0:
                 continue
 
-            change = ((last - open24) / open24) * 100
+            movement = (
+                (last - open24) / open24
+            ) * 100
 
-            volatility = ((high24 - low24) / open24) * 100
+            volatility = (
+                (high24 - low24) / open24
+            ) * 100
 
-            rows.append({
-                "instId": inst_id,
-                "pair": inst_id.replace("-SWAP", ""),
-                "price": last,
-                "movement": change,
-                "abs_movement": abs(change),
-                "high24": high24,
-                "low24": low24,
-                "volatility": volatility,
-                "volume": volume
-            })
+            rows.append(
+                {
+                    "inst_id": inst_id,
+                    "pair": inst_id.replace("-SWAP", ""),
+                    "price": last,
+                    "open24h": open24,
+                    "high24h": high24,
+                    "low24h": low24,
+                    "volume": volume,
+                    "movement": movement,
+                    "abs_movement": abs(movement),
+                    "volatility": volatility
+                }
+            )
 
         except Exception:
             continue
@@ -257,49 +341,58 @@ def get_tickers():
     if not rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows)
-
-    return df
+    return pd.DataFrame(rows)
 
 
 # ============================================================
-# TOP MOVERS
+# TOP MOVER
 # ============================================================
 
-def get_top_movers(df, number=15):
+def get_top_movers(tickers, limit=MAX_COINS_TO_ANALYZE):
+    if tickers.empty:
+        return pd.DataFrame()
 
-    if df.empty:
-        return df
+    df = tickers.copy()
 
-    # Filter minimum activity supaya coin yang sangat sepi
-    # tidak mendominasi hanya karena price range kecil/aneh.
-    df = df[df["volume"] > 0].copy()
+    # Kombinasi pergerakan harga + volatilitas
+    max_movement = max(
+        df["abs_movement"].max(),
+        0.000001
+    )
 
-    # Score gabungan:
-    # 60% absolute movement
-    # 40% intraday volatility
-    df["mover_score"] = (
-        df["abs_movement"] * 0.60
-        +
-        df["volatility"] * 0.40
+    max_volatility = max(
+        df["volatility"].max(),
+        0.000001
+    )
+
+    df["movement_score"] = (
+        df["abs_movement"] / max_movement
+    )
+
+    df["volatility_score"] = (
+        df["volatility"] / max_volatility
+    )
+
+    df["top_mover_score"] = (
+        df["movement_score"] * 0.60
+        + df["volatility_score"] * 0.40
     )
 
     df = df.sort_values(
-        "mover_score",
+        "top_mover_score",
         ascending=False
     )
 
-    return df.head(number).copy()
+    return df.head(limit).reset_index(drop=True)
 
 
 # ============================================================
 # CANDLE DATA
 # ============================================================
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=60)
 def get_candles(inst_id, bar, limit=100):
-
-    data = okx_get(
+    data = api_get(
         "/api/v5/market/candles",
         {
             "instId": inst_id,
@@ -313,333 +406,203 @@ def get_candles(inst_id, bar, limit=100):
 
     rows = []
 
-    for candle in reversed(data):
-
+    for candle in data:
         try:
-
-            rows.append({
-                "timestamp": int(candle[0]),
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4]),
-                "volume": float(candle[5])
-            })
-
+            rows.append(
+                {
+                    "timestamp": int(candle[0]),
+                    "open": float(candle[1]),
+                    "high": float(candle[2]),
+                    "low": float(candle[3]),
+                    "close": float(candle[4]),
+                    "volume": float(candle[5])
+                }
+            )
         except Exception:
             continue
 
     if not rows:
         return pd.DataFrame()
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
 
-
-# ============================================================
-# TECHNICAL CALCULATION
-# ============================================================
-
-def calculate_indicators(df):
-
-    if df.empty or len(df) < 25:
-        return df
-
-    df = df.copy()
-
-    # Moving averages
-    df["ema20"] = df["close"].ewm(
-        span=20,
-        adjust=False
-    ).mean()
-
-    df["ema50"] = df["close"].ewm(
-        span=50,
-        adjust=False
-    ).mean()
-
-    # Bollinger-style bands
-    df["basis"] = df["close"].rolling(20).mean()
-
-    df["std"] = df["close"].rolling(20).std()
-
-    df["upper"] = df["basis"] + (2 * df["std"])
-
-    df["lower"] = df["basis"] - (2 * df["std"])
-
-    # Candle momentum
-    df["momentum"] = (
-        df["close"].pct_change(5) * 100
-    )
-
-    # Candle range %
-    df["range_pct"] = (
-        (df["high"] - df["low"])
-        /
-        df["close"]
-    ) * 100
+    df = df.sort_values("timestamp").reset_index(drop=True)
 
     return df
 
 
 # ============================================================
-# ANALYZE ONE TIMEFRAME
+# TECHNICAL ANALYSIS
 # ============================================================
 
-def analyze_timeframe(df):
+def calculate_outlook(df):
+    if df.empty or len(df) < 30:
+        return None
 
-    if df.empty or len(df) < 25:
-        return {
-            "direction": "NEUTRAL",
-            "score": 0,
-            "price": None,
-            "lower": None,
-            "upper": None,
-            "basis": None
-        }
+    close = df["close"]
 
-    df = calculate_indicators(df)
+    # Moving averages
+    ema_fast = close.ewm(
+        span=9,
+        adjust=False
+    ).mean()
 
-    last = df.iloc[-1]
+    ema_slow = close.ewm(
+        span=21,
+        adjust=False
+    ).mean()
 
-    price = last["close"]
+    # Momentum
+    recent_return = (
+        (close.iloc[-1] - close.iloc[-6])
+        / close.iloc[-6]
+    ) * 100
 
-    ema20 = last["ema20"]
-    ema50 = last["ema50"]
+    # Volatility
+    rolling_high = close.rolling(20).max().iloc[-1]
+    rolling_low = close.rolling(20).min().iloc[-1]
 
-    lower = last["lower"]
-    upper = last["upper"]
+    current_price = close.iloc[-1]
 
-    basis = last["basis"]
+    if current_price <= 0:
+        return None
 
-    score_long = 0
-    score_short = 0
+    range_percent = (
+        (rolling_high - rolling_low)
+        / current_price
+    ) * 100
 
-    # --------------------------------------------------------
-    # TREND
-    # --------------------------------------------------------
+    bullish = 0
+    bearish = 0
 
-    if ema20 > ema50:
-        score_long += 2
-
-    elif ema20 < ema50:
-        score_short += 2
-
-    # --------------------------------------------------------
-    # PRICE POSITION
-    # --------------------------------------------------------
-
-    if price > basis:
-        score_long += 1
-
-    elif price < basis:
-        score_short += 1
-
-    # --------------------------------------------------------
-    # MOMENTUM
-    # --------------------------------------------------------
-
-    momentum = last.get("momentum", 0)
-
-    if pd.notna(momentum):
-
-        if momentum > 0:
-            score_long += 1
-
-        elif momentum < 0:
-            score_short += 1
-
-    # --------------------------------------------------------
-    # BAND POSITION
-    # --------------------------------------------------------
-
-    if pd.notna(lower) and pd.notna(upper):
-
-        band_width = upper - lower
-
-        if band_width > 0:
-
-            position = (
-                price - lower
-            ) / band_width
-
-            # Near lower band
-            if position < 0.30:
-                score_long += 1
-
-            # Near upper band
-            elif position > 0.70:
-                score_short += 1
-
-    # --------------------------------------------------------
-    # FINAL
-    # --------------------------------------------------------
-
-    if score_long > score_short:
-        direction = "LONG"
-
-    elif score_short > score_long:
-        direction = "SHORT"
-
+    # EMA direction
+    if ema_fast.iloc[-1] > ema_slow.iloc[-1]:
+        bullish += 1
     else:
-        direction = "NEUTRAL"
+        bearish += 1
+
+    # Momentum
+    if recent_return > 0:
+        bullish += 1
+    else:
+        bearish += 1
+
+    # Candle direction
+    if close.iloc[-1] > close.iloc[-2]:
+        bullish += 1
+    else:
+        bearish += 1
+
+    if bullish > bearish:
+        outlook = "LONG"
+        confidence = (
+            bullish / 3
+        ) * 100
+    else:
+        outlook = "SHORT"
+        confidence = (
+            bearish / 3
+        ) * 100
 
     return {
-        "direction": direction,
-        "score_long": score_long,
-        "score_short": score_short,
-        "price": price,
-        "lower": lower,
-        "upper": upper,
-        "basis": basis
+        "outlook": outlook,
+        "confidence": confidence,
+        "price": current_price,
+        "range_percent": range_percent,
+        "recent_return": recent_return
     }
 
 
 # ============================================================
-# ANALYZE TOP MOVER
+# ANALYZE ONE COIN
 # ============================================================
 
-def analyze_pair(row):
-
-    inst_id = row["instId"]
-
-    results = {}
+def analyze_coin(inst_id):
+    timeframe_results = {}
 
     for name, bar in TIMEFRAMES.items():
-
         candles = get_candles(
             inst_id,
-            bar,
-            100
+            bar
         )
 
-        results[name] = analyze_timeframe(
-            candles
+        analysis = calculate_outlook(candles)
+
+        if analysis:
+            timeframe_results[name] = analysis
+
+    if len(timeframe_results) < 2:
+        return None
+
+    long_count = sum(
+        1
+        for result in timeframe_results.values()
+        if result["outlook"] == "LONG"
+    )
+
+    short_count = sum(
+        1
+        for result in timeframe_results.values()
+        if result["outlook"] == "SHORT"
+    )
+
+    # Harus ada minimal 2 timeframe yang searah
+    if long_count >= 2:
+        final_outlook = "LONG"
+    elif short_count >= 2:
+        final_outlook = "SHORT"
+    else:
+        return None
+
+    prices = [
+        result["price"]
+        for result in timeframe_results.values()
+    ]
+
+    current_price = prices[-1]
+
+    range_values = [
+        result["range_percent"]
+        for result in timeframe_results.values()
+    ]
+
+    avg_range = sum(range_values) / len(range_values)
+
+    # Entry range sederhana berdasarkan volatilitas
+    entry_distance = max(
+        avg_range / 100 * current_price * 0.25,
+        current_price * 0.001
+    )
+
+    if final_outlook == "LONG":
+        entry_low = current_price - entry_distance
+        entry_high = current_price
+
+        take_profit = current_price + (
+            entry_distance * 2
         )
 
-    long_votes = sum(
-        1
-        for x in results.values()
-        if x["direction"] == "LONG"
-    )
-
-    short_votes = sum(
-        1
-        for x in results.values()
-        if x["direction"] == "SHORT"
-    )
-
-    # --------------------------------------------------------
-    # REQUIRE MAJORITY
-    # --------------------------------------------------------
-
-    if long_votes >= 2 and long_votes > short_votes:
-        outlook = "LONG"
-
-    elif short_votes >= 2 and short_votes > long_votes:
-        outlook = "SHORT"
-
     else:
-        outlook = "NEUTRAL"
+        entry_low = current_price
+        entry_high = current_price + entry_distance
 
-    price = row["price"]
+        take_profit = current_price - (
+            entry_distance * 2
+        )
 
-    tf15 = results["15M"]
-
-    # --------------------------------------------------------
-    # ENTRY / TP
-    # --------------------------------------------------------
-
-    if outlook == "LONG":
-
-        lower = tf15.get("lower")
-
-        if lower is not None and pd.notna(lower):
-
-            entry_low = min(
-                price,
-                lower
-            )
-
-            entry_high = max(
-                price,
-                lower
-            )
-
-            # TP menuju basis
-            basis = tf15.get("basis")
-
-            if basis is not None and pd.notna(basis):
-                tp = basis
-
-                if tp <= price:
-                    tp = price + (
-                        abs(price - lower) * 1.5
-                    )
-
-            else:
-                tp = price * 1.03
-
-        else:
-
-            entry_low = price * 0.995
-            entry_high = price
-            tp = price * 1.03
-
-    elif outlook == "SHORT":
-
-        upper = tf15.get("upper")
-
-        if upper is not None and pd.notna(upper):
-
-            entry_low = min(
-                price,
-                upper
-            )
-
-            entry_high = max(
-                price,
-                upper
-            )
-
-            basis = tf15.get("basis")
-
-            if basis is not None and pd.notna(basis):
-                tp = basis
-
-                if tp >= price:
-                    tp = price - (
-                        abs(upper - price) * 1.5
-                    )
-
-            else:
-                tp = price * 0.97
-
-        else:
-
-            entry_low = price
-            entry_high = price * 1.005
-            tp = price * 0.97
-
-    else:
-
-        entry_low = price
-        entry_high = price
-        tp = price
+    confidence = max(
+        long_count,
+        short_count
+    ) / len(timeframe_results) * 100
 
     return {
-        "pair": row["pair"],
-        "instId": inst_id,
-        "price": price,
-        "movement": row["movement"],
-        "volatility": row["volatility"],
-        "volume": row["volume"],
-        "outlook": outlook,
+        "outlook": final_outlook,
+        "confidence": confidence,
+        "price": current_price,
         "entry_low": entry_low,
         "entry_high": entry_high,
-        "take_profit": tp,
-        "timeframes": results,
-        "long_votes": long_votes,
-        "short_votes": short_votes
+        "take_profit": take_profit,
+        "timeframes": timeframe_results
     }
 
 
@@ -648,293 +611,112 @@ def analyze_pair(row):
 # ============================================================
 
 def run_screening():
-
     tickers = get_tickers()
 
     if tickers.empty:
-        return []
+        return [], pd.DataFrame()
 
     top_movers = get_top_movers(
         tickers,
-        number=15
+        MAX_COINS_TO_ANALYZE
     )
 
     results = []
 
-    for _, row in top_movers.iterrows():
+    for _, mover in top_movers.iterrows():
+        inst_id = mover["inst_id"]
 
-        result = analyze_pair(row)
+        analysis = analyze_coin(inst_id)
 
-        # Hanya simpan coin yang memiliki outlook
-        if result["outlook"] in [
-            "LONG",
-            "SHORT"
-        ]:
+        if not analysis:
+            continue
 
-            now = datetime.now()
+        now = datetime.now(
+            timezone.utc
+        )
 
-            result["timestamp"] = now.strftime(
+        result = {
+            "timestamp": now.isoformat(),
+            "display_time": now.astimezone().strftime(
                 "%H:%M:%S"
-            )
+            ),
+            "pair": mover["pair"],
+            "outlook": analysis["outlook"],
+            "movement": mover["movement"],
+            "volatility": mover["volatility"],
+            "entry_low": analysis["entry_low"],
+            "entry_high": analysis["entry_high"],
+            "take_profit": analysis["take_profit"],
+            "confidence": analysis["confidence"],
+            "price": analysis["price"],
+            "timeframes": analysis["timeframes"]
+        }
 
-            result["timestamp_unix"] = int(
-                time.time()
-            )
+        results.append(result)
 
-            save_history(result)
-
-            results.append(result)
-
-    cleanup_old_history()
-
-    return results
-
-
-# ============================================================
-# FORMAT PRICE
-# ============================================================
-
-def format_price(value):
-
-    if value is None:
-        return "-"
-
-    try:
-
-        value = float(value)
-
-        if value >= 1000:
-            return f"{value:,.2f}"
-
-        elif value >= 1:
-            return f"{value:.4f}"
-
-        elif value >= 0.01:
-            return f"{value:.6f}"
-
-        else:
-            return f"{value:.10f}"
-
-    except Exception:
-        return "-"
-
-
-# ============================================================
-# TRADINGVIEW
-# ============================================================
-
-def show_tradingview(inst_id, interval="15"):
-
-    symbol = inst_id.replace(
-        "-SWAP",
-        ""
-    ).replace(
-        "-",
-        ""
+    # Urutkan berdasarkan confidence + movement
+    results.sort(
+        key=lambda x: (
+            x["confidence"],
+            abs(x["movement"])
+        ),
+        reverse=True
     )
 
-    tv_symbol = f"OKX:{symbol}.P"
-
-    html = f"""
-    <div class="tradingview-widget-container"
-         style="height:700px;width:100%">
-      <div id="tradingview_chart"
-           style="height:700px;width:100%">
-      </div>
-    </div>
-
-    <script
-      type="text/javascript"
-      src="https://s3.tradingview.com/tv.js">
-    </script>
-
-    <script>
-    new TradingView.widget({{
-        "autosize": true,
-        "symbol": "{tv_symbol}",
-        "interval": "{interval}",
-        "timezone": "Asia/Jakarta",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "toolbar_bg": "#000000",
-        "enable_publishing": false,
-        "hide_top_toolbar": false,
-        "hide_legend": false,
-        "save_image": false,
-        "container_id": "tradingview_chart"
-    }});
-    </script>
-    """
-
-    components.html(
-        html,
-        height=720
-    )
+    return results, top_movers
 
 
 # ============================================================
 # SESSION STATE
 # ============================================================
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if "token" not in st.session_state:
-    st.session_state.token = None
-
-if "remaining" not in st.session_state:
-    st.session_state.remaining = 0
-
 if "results" not in st.session_state:
     st.session_state.results = []
 
-if "selected_chart" not in st.session_state:
-    st.session_state.selected_chart = None
-
-
-# ============================================================
-# DATABASE INIT
-# ============================================================
-
-init_db()
-cleanup_old_history()
-
+if "last_screening" not in st.session_state:
+    st.session_state.last_screening = None
 
 # ============================================================
-# HEADER
+# SCREENING BUTTON
 # ============================================================
 
-st.title("0xmwY Kraken")
+st.subheader("Volatility Scanner")
 
-st.caption(
-    "pengembang : Lutfi Andreyansah"
-)
-
-st.write(
-    "Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"
-)
-
-st.divider()
-
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-if not st.session_state.logged_in:
-
-    st.subheader("🔐 Access")
-
-    token_input = st.text_input(
-        "Masukkan token",
-        type="password",
-        placeholder="KRAKEN-XXXX"
-    )
-
-    if st.button(
-        "Masuk",
-        use_container_width=True
-    ):
-
-        if token_input in TOKENS:
-
-            st.session_state.logged_in = True
-            st.session_state.token = token_input
-            st.session_state.remaining = TOKENS[
-                token_input
-            ]
-
-            st.success(
-                "Token valid. Access granted."
-            )
-
-            st.rerun()
-
-        else:
-
-            st.error(
-                "Token tidak valid."
-            )
-
-    st.stop()
-
-
-# ============================================================
-# ACCESS INFO
-# ============================================================
-
-col1, col2 = st.columns(2)
+col1, col2 = st.columns([1, 4])
 
 with col1:
-
-    st.metric(
-        "Remaining Screening",
-        st.session_state.remaining
+    scan_button = st.button(
+        "⚡ SCREEN NOW",
+        use_container_width=True
     )
 
 with col2:
+    if st.session_state.last_screening:
+        st.caption(
+            "Last screening: "
+            + st.session_state.last_screening
+        )
 
-    if st.button(
-        "Logout",
-        use_container_width=True
+if scan_button:
+    with st.spinner(
+        "Scanning volatile coins..."
     ):
+        results, top_movers = run_screening()
 
-        st.session_state.logged_in = False
-        st.session_state.token = None
-        st.session_state.remaining = 0
-        st.session_state.results = []
+    st.session_state.results = results
 
-        st.rerun()
-
-
-# ============================================================
-# SCREEN BUTTON
-# ============================================================
-
-st.subheader("🔥 Top Mover Scanner")
-
-st.write(
-    "Mencari coin yang sedang bergerak paling volatile "
-    "kemudian menentukan outlook LONG atau SHORT."
-)
-
-if st.session_state.remaining <= 0:
-
-    st.warning(
-        "Limit screening kamu sudah habis."
+    now_local = datetime.now().strftime(
+        "%H:%M:%S"
     )
 
-else:
+    st.session_state.last_screening = now_local
 
-    if st.button(
-        "🚀 START SCREENING",
-        type="primary",
-        use_container_width=True
-    ):
+    # Simpan history
+    if results:
+        save_history(results)
+        cleanup_old_history()
 
-        with st.spinner(
-            "Mencari Top Movers dan menganalisis..."
-        ):
-
-            results = run_screening()
-
-        st.session_state.results = results
-
-        st.session_state.remaining -= 1
-
-        if results:
-
-            st.success(
-                f"{len(results)} coin berhasil dianalisis."
-            )
-
-        else:
-
-            st.warning(
-                "Belum ditemukan setup LONG/SHORT yang cukup kuat."
-            )
-
+    st.rerun()
 
 # ============================================================
 # CURRENT RESULTS
@@ -942,11 +724,14 @@ else:
 
 results = st.session_state.results
 
-if results:
+st.subheader("Current Outlook")
 
-    st.divider()
-
-    st.subheader("📡 CURRENT SCREENING")
+if not results:
+    st.info(
+        "Belum ada hasil screening. "
+        "Tekan SCREEN NOW untuk memulai."
+    )
+else:
 
     long_results = [
         x for x in results
@@ -955,4 +740,142 @@ if results:
 
     short_results = [
         x for x in results
-        if x["outlook"]
+        if x["outlook"] == "SHORT"
+    ]
+
+    col_long, col_short = st.columns(2)
+
+    # --------------------------------------------------------
+    # LONG
+    # --------------------------------------------------------
+
+    with col_long:
+        st.markdown("### 🟢 OUTLOOK LONG")
+
+        if not long_results:
+            st.write("Tidak ada setup LONG.")
+
+        for item in long_results:
+            st.markdown(
+                f"""
+                <div class="outlook-long">
+                    <h3>{escape(item["pair"])}</h3>
+                    <p>
+                    Entry: {item["entry_low"]:.8g}
+                    → {item["entry_high"]:.8g}
+                    </p>
+                    <p>
+                    <b>Take Profit:</b>
+                    {item["take_profit"]:.8g}
+                    </p>
+                    <p class="small-text">
+                    Movement: {item["movement"]:.2f}% |
+                    Volatility: {item["volatility"]:.2f}% |
+                    Confidence: {item["confidence"]:.0f}%
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    # --------------------------------------------------------
+    # SHORT
+    # --------------------------------------------------------
+
+    with col_short:
+        st.markdown("### 🔴 OUTLOOK SHORT")
+
+        if not short_results:
+            st.write("Tidak ada setup SHORT.")
+
+        for item in short_results:
+            st.markdown(
+                f"""
+                <div class="outlook-short">
+                    <h3>{escape(item["pair"])}</h3>
+                    <p>
+                    Entry: {item["entry_low"]:.8g}
+                    → {item["entry_high"]:.8g}
+                    </p>
+                    <p>
+                    <b>Take Profit:</b>
+                    {item["take_profit"]:.8g}
+                    </p>
+                    <p class="small-text">
+                    Movement: {item["movement"]:.2f}% |
+                    Volatility: {item["volatility"]:.2f}% |
+                    Confidence: {item["confidence"]:.0f}%
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+# ============================================================
+# TRADINGVIEW
+# ============================================================
+
+st.divider()
+st.subheader("Chart")
+
+if results:
+
+    options = []
+
+    for item in results:
+        label = (
+            f'{item["outlook"]} • {item["pair"]}'
+        )
+        options.append(label)
+
+    selected = st.selectbox(
+        "Pilih hasil screening",
+        options
+    )
+
+    selected_item = None
+
+    for item in results:
+        label = (
+            f'{item["outlook"]} • {item["pair"]}'
+        )
+
+        if label == selected:
+            selected_item = item
+            break
+
+    if selected_item:
+
+        pair = selected_item["pair"]
+
+        tv_symbol = (
+            "OKX:"
+            + pair.replace("-", "")
+            + ".P"
+        )
+
+        # TradingView official widget
+        tv_html = f"""
+        <div style="height:650px;width:100%;">
+            <div id="tradingview_chart"
+                 style="height:100%;width:100%;">
+            </div>
+        </div>
+
+        <script
+            type="text/javascript"
+            src="https://s3.tradingview.com/tv.js">
+        </script>
+
+        <script type="text/javascript">
+            new TradingView.widget({{
+                "autosize": true,
+                "symbol": "{tv_symbol}",
+                "interval": "15",
+                "timezone": "Asia/Jakarta",
+                "theme": "dark",
+                "style": "1",
+                "locale": "en",
+                "enable_publishing": false,
+                "hide_top_toolbar": false,
+             
