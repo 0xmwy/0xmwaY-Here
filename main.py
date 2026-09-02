@@ -1258,4 +1258,70 @@ st.divider()
 st.caption(
     "Informational scanner — DYOR."
         )
-    
+   # =========================================================
+# FED MACRO MARKET RATIO
+# =========================================================
+
+st.divider()
+st.subheader("Fed Macro Market Impact")
+
+macro = fed_macro_ratio()
+
+bullish = macro["bullish"]
+bearish = macro["bearish"]
+winner = macro["winner"]
+impact = macro["impact"]
+
+st.markdown(
+    f"""
+    <div style="
+        display:flex;
+        justify-content:space-between;
+        font-weight:700;
+        margin-bottom:5px;
+    ">
+        <span>🟢 BULLISH {bullish}%</span>
+        <span>🔴 BEARISH {bearish}%</span>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# Single bar — kiri/kanan mengikuti ratio
+st.markdown(
+    f"""
+    <div style="
+        width:100%;
+        height:22px;
+        background:#333;
+        border-radius:8px;
+        overflow:hidden;
+        display:flex;
+    ">
+        <div style="
+            width:{bullish}%;
+            height:100%;
+            background:#22c55e;
+        "></div>
+
+        <div style="
+            width:{bearish}%;
+            height:100%;
+            background:#ef4444;
+        "></div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    f"### {'🟢' if winner == 'BULLISH' else '🔴' if winner == 'BEARISH' else '⚪'} {winner}"
+)
+
+st.caption(
+    f"Fed Impact: {impact}"
+)
+
+st.caption(
+    "Source: Federal Reserve official updates"
+    ) 
