@@ -3,6 +3,9 @@ import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import sqlite3
+import re
+import xml.etree.ElementTree as ET
+from html import unescape
 from datetime import datetime, timedelta, timezone
 
 st.set_page_config(
@@ -24,6 +27,38 @@ MAX_MOVER = 12
 
 
 # =========================================================
+# FED CONFIG
+# =========================================================
+
+FED_NEWS_URL = (
+    "https://www.federalreserve.gov/newsevents.htm"
+)
+
+FED_SPEECHES_URL = (
+    "https://www.federalreserve.gov/"
+    "newsevents/speech/2026-speeches.htm"
+)
+
+FED_CALENDAR_URL = (
+    "https://www.federalreserve.gov/"
+    "newsevents/calendar.htm"
+)
+
+FED_FOMC_URL = (
+    "https://www.federalreserve.gov/"
+    "monetarypolicy/fomccalendars.htm"
+)
+
+FED_RSS_URLS = [
+    "https://www.federalreserve.gov/"
+    "feeds/speeches.xml",
+
+    "https://www.federalreserve.gov/"
+    "feeds/testimony.xml"
+]
+
+
+# =========================================================
 # HEADER
 # =========================================================
 
@@ -40,6 +75,58 @@ st.markdown("""
 
 .sub {
     opacity: .7;
+}
+
+.macro-card {
+    padding: 18px;
+    border-radius: 14px;
+    border: 1px solid rgba(128,128,128,.25);
+    margin-bottom: 12px;
+}
+
+.macro-title {
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.macro-small {
+    opacity: .7;
+    font-size: 13px;
+}
+
+.sentiment-bar {
+    width: 100%;
+    height: 28px;
+    border-radius: 999px;
+    overflow: hidden;
+    display: flex;
+    margin-top: 10px;
+    margin-bottom: 8px;
+    background: #333;
+}
+
+.sentiment-bull {
+    background: #19c37d;
+    height: 100%;
+}
+
+.sentiment-bear {
+    background: #ef4444;
+    height: 100%;
+}
+
+.news-item {
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(128,128,128,.18);
+}
+
+.news-date {
+    font-size: 12px;
+    opacity: .6;
+}
+
+.news-title {
+    font-weight: 600;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -292,6 +379,637 @@ def get_tickers():
         })
 
     return pd.DataFrame(rows)
+    # =========================================================
+# FED NEWS
+# =========================================================
+
+def clean_html(text):
+
+    if not text:
+        return ""
+
+    text = unescape(text)
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
+
+
+@st.cache_data(ttl=120)
+def get_fed_news():
+
+    news = []
+
+    # -----------------------------------------------------
+    # OFFICIAL FED NEWS PAGE
+    # -----------------------------------------------------
+
+    try:
+
+        r = requests.get(
+            FED_NEWS_URL,
+            timeout=15,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        r.raise_for_status()
+
+        html = r.text
+
+        pattern = re.compile(
+            r'href="([^"]+)"[^>]*>'
+            r'\s*([^<]{10,250})'
+            r'</a>',
+            re.IGNORECASE
+        )
+
+        matches = pattern.findall(html)
+
+        for href, title in matches:
+
+            title = clean_html(title)
+
+            if len(title) < 10:
+                continue
+
+            if href.startswith("/"):
+                link = (
+                    "https://www.federalreserve.gov"
+                    + href
+                )
+            else:
+                link = href
+
+            if "speech" in link.lower():
+                category = "SPEECH"
+
+            elif "testimony" in link.lower():
+                category = "TESTIMONY"
+
+            elif "press" in link.lower():
+                category = "PRESS"
+
+            else:
+                category = "FED"
+
+            news.append({
+                "title": title,
+                "link": link,
+                "category": category,
+                "date": ""
+            })
+
+    except Exception:
+        pass
+
+
+    # -----------------------------------------------------
+    # OFFICIAL FED RSS
+    # -----------------------------------------------------
+
+    for rss_url in FED_RSS_URLS:
+
+        try:
+
+            r = requests.get(
+                rss_url,
+                timeout=15,
+                headers={
+                    "User-Agent": "Mozilla/5.0"
+                }
+            )
+
+            r.raise_for_status()
+
+            root = ET.fromstring(r.content)
+
+            for item in root.iter("item"):
+
+                title = item.findtext(
+                    "title",
+                    default=""
+                )
+
+                link = item.findtext(
+                    "link",
+                    default=""
+                )
+
+                pub = item.findtext(
+                    "pubDate",
+                    default=""
+                )
+
+                description = item.findtext(
+                    "description",
+                    default=""
+                )
+
+                title = clean_html(title)
+                description = clean_html(
+                    description
+                )
+
+                if not title:
+                    continue
+
+                news.append({
+                    "title": title,
+                    "link": link,
+                    "category": "FED RSS",
+                    "date": pub,
+                    "description": description
+                })
+
+        except Exception:
+            continue
+
+
+    # -----------------------------------------------------
+    # REMOVE DUPLICATES
+    # -----------------------------------------------------
+
+    unique = {}
+
+    for item in news:
+
+        key = (
+            item.get("title", "")
+            .strip()
+            .lower()
+        )
+
+        if key and key not in unique:
+            unique[key] = item
+
+    return list(unique.values())[:30]
+
+
+# =========================================================
+# FED SENTIMENT
+# =========================================================
+
+BULLISH_TERMS = [
+    "rate cut",
+    "rate cuts",
+    "lower rates",
+    "lowering rates",
+    "easing",
+    "dovish",
+    "accommodative",
+    "support growth",
+    "economic growth",
+    "strong growth",
+    "soft landing",
+    "inflation cooling",
+    "inflation eased",
+    "inflation moderating",
+    "labor market weakening",
+    "labor market cooling",
+    "room to ease",
+    "policy easing",
+    "cut rates"
+]
+
+BEARISH_TERMS = [
+    "rate hike",
+    "rate hikes",
+    "higher rates",
+    "raising rates",
+    "tightening",
+    "hawkish",
+    "restrictive",
+    "persistent inflation",
+    "inflation remains elevated",
+    "inflation remains high",
+    "inflation pressures",
+    "overheating",
+    "strong inflation",
+    "labor market remains strong",
+    "upside inflation",
+    "policy tightening",
+    "keep rates high",
+    "higher for longer"
+]
+
+
+def fed_sentiment_score(news):
+
+    bullish = 0
+    bearish = 0
+
+    for item in news:
+
+        text = (
+            item.get("title", "")
+            + " "
+            + item.get("description", "")
+        ).lower()
+
+        for term in BULLISH_TERMS:
+
+            if term in text:
+                bullish += 1
+
+        for term in BEARISH_TERMS:
+
+            if term in text:
+                bearish += 1
+
+    total = bullish + bearish
+
+    if total == 0:
+
+        return {
+            "bullish": 50,
+            "bearish": 50,
+            "winner": "NEUTRAL",
+            "score": 0
+        }
+
+    bullish_pct = (
+        bullish
+        / total
+        * 100
+    )
+
+    bearish_pct = (
+        bearish
+        / total
+        * 100
+    )
+
+    if bullish_pct > bearish_pct:
+        winner = "BULLISH"
+
+    elif bearish_pct > bullish_pct:
+        winner = "BEARISH"
+
+    else:
+        winner = "NEUTRAL"
+
+    score = (
+        bullish_pct
+        - bearish_pct
+    )
+
+    return {
+        "bullish": bullish_pct,
+        "bearish": bearish_pct,
+        "winner": winner,
+        "score": score
+    }
+
+
+def fed_macro_ratio():
+
+    news = get_fed_news()
+
+    sentiment = fed_sentiment_score(
+        news
+    )
+
+    return {
+        "news": news,
+        "bullish": sentiment["bullish"],
+        "bearish": sentiment["bearish"],
+        "winner": sentiment["winner"],
+        "score": sentiment["score"]
+    }
+
+
+# =========================================================
+# FED H-1 EVENT
+# =========================================================
+
+def get_month_calendar_url(year, month):
+
+    month_name = datetime(
+        year,
+        month,
+        1
+    ).strftime("%B").lower()
+
+    return (
+        "https://www.federalreserve.gov/"
+        f"newsevents/{year}-{month_name}.htm"
+    )
+
+
+@st.cache_data(ttl=300)
+def get_fed_calendar():
+
+    events = []
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    urls = [
+        FED_CALENDAR_URL,
+        get_month_calendar_url(
+            now.year,
+            now.month
+        )
+    ]
+
+    if now.month == 12:
+
+        next_year = now.year + 1
+        next_month = 1
+
+    else:
+
+        next_year = now.year
+        next_month = now.month + 1
+
+    urls.append(
+        get_month_calendar_url(
+            next_year,
+            next_month
+        )
+    )
+
+    seen = set()
+
+    for url in urls:
+
+        try:
+
+            r = requests.get(
+                url,
+                timeout=15,
+                headers={
+                    "User-Agent": "Mozilla/5.0"
+                }
+            )
+
+            r.raise_for_status()
+
+            html = r.text
+
+            text = clean_html(html)
+
+            # -------------------------------------------------
+            # FOMC
+            # -------------------------------------------------
+
+            if "FOMC" in text:
+
+                key = "FOMC"
+
+                if key not in seen:
+
+                    events.append({
+                        "name": "FOMC",
+                        "date_text": "",
+                        "type": "FOMC",
+                        "source": FED_FOMC_URL
+                    })
+
+                    seen.add(key)
+
+            # -------------------------------------------------
+            # SPEECH
+            # -------------------------------------------------
+
+            speech_matches = re.findall(
+                r"Speech[^<]{0,150}",
+                html,
+                re.IGNORECASE
+            )
+
+            for speech in speech_matches[:10]:
+
+                speech = clean_html(
+                    speech
+                )
+
+                if len(speech) < 10:
+                    continue
+
+                events.append({
+                    "name": speech,
+                    "date_text": "",
+                    "type": "SPEECH",
+                    "source": FED_CALENDAR_URL
+                })
+
+        except Exception:
+            continue
+
+    return events
+
+
+def h1_fed_alert():
+
+    events = get_fed_calendar()
+
+    # The official calendar structure changes,
+    # so only display a safe informational alert
+    # when an upcoming Fed/FOMC event is detected.
+
+    if not events:
+        return []
+
+    unique = {}
+
+    for event in events:
+
+        key = (
+            event["type"],
+            event["name"]
+        )
+
+        unique[key] = event
+
+    return list(unique.values())[:10]
+
+
+# =========================================================
+# FED MACRO UI
+# =========================================================
+
+def show_fed_macro():
+
+    macro = fed_macro_ratio()
+
+    bullish = macro["bullish"]
+    bearish = macro["bearish"]
+    winner = macro["winner"]
+
+    st.divider()
+
+    st.subheader(
+        "🏦 Fed Macro Market Impact"
+    )
+
+    if winner == "BULLISH":
+
+        st.success(
+            f"Dominan: BULLISH • "
+            f"{bullish:.0f}% Bullish"
+        )
+
+    elif winner == "BEARISH":
+
+        st.error(
+            f"Dominan: BEARISH • "
+            f"{bearish:.0f}% Bearish"
+        )
+
+    else:
+
+        st.info(
+            "Dominan: NEUTRAL"
+        )
+
+    # -----------------------------------------------------
+    # ONE SPLIT BAR
+    # -----------------------------------------------------
+
+    st.markdown(
+        f"""
+        <div class="sentiment-bar">
+            <div
+                class="sentiment-bull"
+                style="width:{bullish:.2f}%">
+            </div>
+
+            <div
+                class="sentiment-bear"
+                style="width:{bearish:.2f}%">
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    left, right = st.columns(2)
+
+    with left:
+
+        st.metric(
+            "🟢 Bullish",
+            f"{bullish:.0f}%"
+        )
+
+    with right:
+
+        st.metric(
+            "🔴 Bearish",
+            f"{bearish:.0f}%"
+        )
+
+    # -----------------------------------------------------
+    # FED NEWS
+    # -----------------------------------------------------
+
+    st.markdown(
+        "### 📰 Latest Fed Updates"
+    )
+
+    news = macro["news"]
+
+    if not news:
+
+        st.info(
+            "Belum ada update Fed yang berhasil diambil."
+        )
+
+    else:
+
+        for item in news[:8]:
+
+            title = item.get(
+                "title",
+                "Fed Update"
+            )
+
+            category = item.get(
+                "category",
+                "FED"
+            )
+
+            date = item.get(
+                "date",
+                ""
+            )
+
+            link = item.get(
+                "link",
+                ""
+            )
+
+            st.markdown(
+                f"""
+                <div class="news-item">
+                    <div class="news-title">
+                        {title}
+                    </div>
+                    <div class="news-date">
+                        {category} {date}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            if link:
+
+                st.markdown(
+                    f"[Open official Fed source]({link})"
+                )
+
+    # -----------------------------------------------------
+    # H-1 ALERT
+    # -----------------------------------------------------
+
+    alerts = h1_fed_alert()
+
+    if alerts:
+
+        st.markdown(
+            "### 🚨 Upcoming Fed Alert"
+        )
+
+        st.warning(
+            "Ada agenda Federal Reserve "
+            "yang perlu diperhatikan. "
+            "Cek kalender resmi sebelum trading."
+        )
+
+        for event in alerts[:5]:
+
+            st.caption(
+                f"• {event['type']}: "
+                f"{event['name']}"
+            )
+
+    # -----------------------------------------------------
+    # REFRESH
+    # -----------------------------------------------------
+
+    if st.button(
+        "🔄 Refresh Fed Data",
+        use_container_width=True
+    ):
+
+        st.cache_data.clear()
+
+        st.rerun()
 
 
 # =========================================================
@@ -452,10 +1170,8 @@ def analyze_tf(df):
         "confidence": confidence,
         "price": close.iloc[-1],
         "volatility": volatility
-    }
-
-
-# =========================================================
+            }
+    # =========================================================
 # COIN ANALYSIS
 # =========================================================
 
@@ -702,7 +1418,9 @@ def resolve_history():
 
     con.commit()
     con.close()
-    # =========================================================
+
+
+# =========================================================
 # SESSION
 # =========================================================
 
@@ -757,6 +1475,13 @@ st.caption(
 # =========================================================
 
 resolve_history()
+
+
+# =========================================================
+# FED MACRO
+# =========================================================
+
+show_fed_macro()
 
 
 # =========================================================
@@ -1035,9 +1760,7 @@ else:
         use_container_width=True,
         hide_index=True
     )
-
-
-# =========================================================
+    # =========================================================
 # 24H PERFORMANCE
 # =========================================================
 
@@ -1257,71 +1980,4 @@ st.divider()
 
 st.caption(
     "Informational scanner — DYOR."
-        )
-   # =========================================================
-# FED MACRO MARKET RATIO
-# =========================================================
-
-st.divider()
-st.subheader("Fed Macro Market Impact")
-
-macro = fed_macro_ratio()
-
-bullish = macro["bullish"]
-bearish = macro["bearish"]
-winner = macro["winner"]
-impact = macro["impact"]
-
-st.markdown(
-    f"""
-    <div style="
-        display:flex;
-        justify-content:space-between;
-        font-weight:700;
-        margin-bottom:5px;
-    ">
-        <span>🟢 BULLISH {bullish}%</span>
-        <span>🔴 BEARISH {bearish}%</span>
-    </div>
-    """,
-    unsafe_allow_html=True
 )
-
-# Single bar — kiri/kanan mengikuti ratio
-st.markdown(
-    f"""
-    <div style="
-        width:100%;
-        height:22px;
-        background:#333;
-        border-radius:8px;
-        overflow:hidden;
-        display:flex;
-    ">
-        <div style="
-            width:{bullish}%;
-            height:100%;
-            background:#22c55e;
-        "></div>
-
-        <div style="
-            width:{bearish}%;
-            height:100%;
-            background:#ef4444;
-        "></div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    f"### {'🟢' if winner == 'BULLISH' else '🔴' if winner == 'BEARISH' else '⚪'} {winner}"
-)
-
-st.caption(
-    f"Fed Impact: {impact}"
-)
-
-st.caption(
-    "Source: Federal Reserve official updates"
-    ) 
