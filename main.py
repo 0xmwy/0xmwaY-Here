@@ -39,7 +39,7 @@ st.markdown("""
     opacity: .7;
 }
 .card {
-    padding: 15px;
+    padding: 16px;
     border-radius: 12px;
     border: 1px solid rgba(128,128,128,.3);
     margin-bottom: 10px;
@@ -168,7 +168,7 @@ clean_db()
 # API
 # =========================================================
 
-def get_api(path, params):
+def api(path, params):
     try:
         r = requests.get(
             BASE + path,
@@ -189,13 +189,13 @@ def get_api(path, params):
         return None
 
 # =========================================================
-# MARKET TICKERS
+# TICKERS
 # =========================================================
 
 @st.cache_data(ttl=30)
 def get_tickers():
 
-    data = get_api(
+    data = api(
         "/api/v5/market/tickers",
         {"instType": "SWAP"}
     )
@@ -223,13 +223,8 @@ def get_tickers():
         if price <= 0 or op <= 0:
             continue
 
-        movement = (
-            (price - op) / op
-        ) * 100
-
-        volatility = (
-            (high - low) / op
-        ) * 100
+        movement = ((price - op) / op) * 100
+        volatility = ((high - low) / op) * 100
 
         rows.append({
             "inst": inst,
@@ -251,6 +246,8 @@ def top_movers(df):
     if df.empty:
         return df
 
+    df = df.copy()
+
     move_max = max(
         df["abs_move"].max(),
         0.000001
@@ -261,12 +258,10 @@ def top_movers(df):
         0.000001
     )
 
-    df = df.copy()
-
     df["score"] = (
-        (df["abs_move"] / move_max) * .60
+        (df["abs_move"] / move_max) * 0.60
         +
-        (df["volatility"] / vol_max) * .40
+        (df["volatility"] / vol_max) * 0.40
     )
 
     return (
@@ -285,7 +280,7 @@ def top_movers(df):
 @st.cache_data(ttl=30)
 def candles(inst, bar):
 
-    data = get_api(
+    data = api(
         "/api/v5/market/candles",
         {
             "instId": inst,
@@ -397,7 +392,6 @@ def analyze_coin(inst):
     for name, bar in TIMEFRAMES.items():
 
         df = candles(inst, bar)
-
         result = analyze_tf(df)
 
         if result:
@@ -431,28 +425,27 @@ def analyze_coin(inst):
     ) / len(tf)
 
     distance = max(
-        price * (vol / 100) * .20,
-        price * .001
+        price * (vol / 100) * 0.20,
+        price * 0.001
     )
 
     if side == "LONG":
 
         entry_low = price - distance
         entry_high = price
-
         tp = price + distance * 2
 
     else:
 
         entry_low = price
         entry_high = price + distance
-
         tp = price - distance * 2
 
-    confidence = max(
-        longs,
-        shorts
-    ) / len(tf) * 100
+    confidence = (
+        max(longs, shorts)
+        / len(tf)
+        * 100
+    )
 
     return {
         "outlook": side,
@@ -460,8 +453,7 @@ def analyze_coin(inst):
         "entry_low": entry_low,
         "entry_high": entry_high,
         "tp": tp,
-        "confidence": confidence,
-        "timeframes": tf
+        "confidence": confidence
     }
 
 # =========================================================
@@ -488,9 +480,7 @@ def screening():
         if not result:
             continue
 
-        now = datetime.now(
-            timezone.utc
-        )
+        now = datetime.now(timezone.utc)
 
         results.append({
             "timestamp": now.isoformat(),
@@ -504,8 +494,7 @@ def screening():
             "entry_low": result["entry_low"],
             "entry_high": result["entry_high"],
             "tp": result["tp"],
-            "confidence": result["confidence"],
-            "timeframes": result["timeframes"]
+            "confidence": result["confidence"]
         })
 
     return sorted(
@@ -527,8 +516,11 @@ if "results" not in st.session_state:
 if "last_scan" not in st.session_state:
     st.session_state.last_scan = "-"
 
+if "selected_pair" not in st.session_state:
+    st.session_state.selected_pair = None
+
 # =========================================================
-# BUTTON
+# SCREEN BUTTON
 # =========================================================
 
 if st.button(
@@ -542,13 +534,14 @@ if st.button(
         result = screening()
 
     st.session_state.results = result
+
     st.session_state.last_scan = (
-        datetime.now().strftime(
-            "%H:%M:%S"
-        )
+        datetime.now().strftime("%H:%M:%S")
     )
 
-    save_results(result)
+    if result:
+        save_results(result)
+
     clean_db()
 
     st.rerun()
@@ -558,13 +551,13 @@ st.caption(
 )
 
 # =========================================================
-# RESULTS
+# CURRENT OUTLOOK
 # =========================================================
-
-results = st.session_state.results
 
 st.divider()
 st.subheader("Current Outlook")
+
+results = st.session_state.results
 
 longs = [
     x for x in results
@@ -594,22 +587,38 @@ with col1:
         st.markdown(
             f"""
             <div class="card">
-            <h3>{x["pair"]}</h3>
-            <b>Entry:</b>
-            {x["entry_low"]:.8g}
-            → {x["entry_high"]:.8g}<br><br>
-            <b>Take Profit:</b>
-            {x["tp"]:.8g}<br><br>
-            Movement:
-            {x["movement"]:.2f}%<br>
-            Volatility:
-            {x["volatility"]:.2f}%<br>
-            Confidence:
-            {x["confidence"]:.0f}%
+                <h3>{x["pair"]}</h3>
+                <b>Entry:</b>
+                {x["entry_low"]:.8g}
+                → {x["entry_high"]:.8g}
+                <br><br>
+
+                <b>Take Profit:</b>
+                {x["tp"]:.8g}
+                <br><br>
+
+                Movement:
+                {x["movement"]:.2f}%
+                <br>
+
+                Volatility:
+                {x["volatility"]:.2f}%
+                <br>
+
+                Confidence:
+                {x["confidence"]:.0f}%
             </div>
             """,
             unsafe_allow_html=True
         )
+
+        if st.button(
+            f"📈 Open Chart • {x['pair']}",
+            key=f"long_{x['pair']}",
+            use_container_width=True
+        ):
+            st.session_state.selected_pair = x["pair"]
+            st.rerun()
 
 # =========================================================
 # SHORT
@@ -627,92 +636,93 @@ with col2:
         st.markdown(
             f"""
             <div class="card">
-            <h3>{x["pair"]}</h3>
-            <b>Entry:</b>
-            {x["entry_low"]:.8g}
-            → {x["entry_high"]:.8g}<br><br>
-            <b>Take Profit:</b>
-            {x["tp"]:.8g}<br><br>
-            Movement:
-            {x["movement"]:.2f}%<br>
-            Volatility:
-            {x["volatility"]:.2f}%<br>
-            Confidence:
-            {x["confidence"]:.0f}%
+                <h3>{x["pair"]}</h3>
+                <b>Entry:</b>
+                {x["entry_low"]:.8g}
+                → {x["entry_high"]:.8g}
+                <br><br>
+
+                <b>Take Profit:</b>
+                {x["tp"]:.8g}
+                <br><br>
+
+                Movement:
+                {x["movement"]:.2f}%
+                <br>
+
+                Volatility:
+                {x["volatility"]:.2f}%
+                <br>
+
+                Confidence:
+                {x["confidence"]:.0f}%
             </div>
             """,
             unsafe_allow_html=True
         )
 
+        if st.button(
+            f"📉 Open Chart • {x['pair']}",
+            key=f"short_{x['pair']}",
+            use_container_width=True
+        ):
+            st.session_state.selected_pair = x["pair"]
+            st.rerun()
+
 # =========================================================
-# TRADINGVIEW
+# TRADINGVIEW LIVE CHART
 # =========================================================
 
-if results:
+if st.session_state.selected_pair:
+
+    pair = st.session_state.selected_pair
 
     st.divider()
-    st.subheader("Chart")
 
-    choices = [
-        f'{x["outlook"]} • {x["pair"]}'
-        for x in results
-    ]
-
-    selected = st.selectbox(
-        "Pilih coin",
-        choices
+    st.subheader(
+        f"Live Chart • {pair}"
     )
 
-    selected_item = next(
-        (
-            x for x in results
-            if f'{x["outlook"]} • {x["pair"]}'
-            == selected
-        ),
-        None
+    symbol = (
+        "OKX:"
+        + pair.replace("-", "")
+        + ".P"
     )
 
-    if selected_item:
+    html = f"""
+    <div id="tradingview_chart"
+         style="height:650px;width:100%;">
+    </div>
 
-        pair = selected_item["pair"]
+    <script
+        src="https://s3.tradingview.com/tv.js">
+    </script>
 
-        symbol = (
-            "OKX:"
-            + pair.replace("-", "")
-            + ".P"
-        )
+    <script>
+    new TradingView.widget({{
+        "autosize": true,
+        "symbol": "{symbol}",
+        "interval": "15",
+        "timezone": "Asia/Jakarta",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "enable_publishing": false,
+        "hide_top_toolbar": false,
+        "hide_legend": false,
+        "save_image": false,
+        "container_id": "tradingview_chart"
+    }});
+    </script>
+    """
 
-        html = f"""
-        <div id="tv"
-             style="height:650px;width:100%">
-        </div>
-
-        <script src=
-        "https://s3.tradingview.com/tv.js">
-        </script>
-
-        <script>
-        new TradingView.widget({{
-            "autosize": true,
-            "symbol": "{symbol}",
-            "interval": "15",
-            "timezone": "Asia/Jakarta",
-            "theme": "dark",
-            "style": "1",
-            "locale": "en",
-            "enable_publishing": false,
-            "container_id": "tv"
-        }});
-        </script>
-        """
-
-        st.components.v1.html(
-            html,
-            height=670
-        )
+    st.components.v1.html(
+        html,
+        height=670
+    )
 
 # =========================================================
-# HISTORY
+# HISTORY 24 HOURS
 # =========================================================
 
 st.divider()
@@ -736,7 +746,9 @@ else:
             utc=True
         )
         .dt.tz_convert("Asia/Jakarta")
-        .dt.strftime("%Y-%m-%d %H:%M:%S")
+        .dt.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     )
 
     history = history.rename(
@@ -791,4 +803,4 @@ st.divider()
 
 st.caption(
     "Informational scanner — DYOR."
-    )
+        )
