@@ -3,31 +3,15 @@ import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import sqlite3
-import hashlib
-import hmac
-import secrets
-import math
-
 from datetime import datetime, timedelta, timezone
-
-
-# =========================================================
-# CONFIG
-# =========================================================
 
 st.set_page_config(
     page_title="0xmwY Kraken",
     page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
 BASE = "https://www.okx.com"
-
-LBANK_BASE = (
-    "https://lbkperp.lbank.com"
-)
-
 DB = "screening_history.db"
 
 TIMEFRAMES = {
@@ -36,2664 +20,1233 @@ TIMEFRAMES = {
     "1H": "1H"
 }
 
-
-# =========================================================
-# DATABASE
-# =========================================================
-
-def get_db():
-
-    return sqlite3.connect(
-        DB,
-        check_same_thread=False
-    )
-
-
-def init_db():
-
-    conn = get_db()
-
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS screening_history (
-
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            timestamp TEXT,
-
-            pair TEXT,
-
-            timeframe TEXT,
-
-            outlook TEXT,
-
-            entry_low REAL,
-
-            entry_high REAL,
-
-            take_profit REAL,
-
-            stop_loss REAL,
-
-            current_price REAL,
-
-            movement REAL,
-
-            volatility REAL,
-
-            confidence REAL,
-
-            status TEXT DEFAULT 'OPEN',
-
-            pnl_percent REAL DEFAULT 0
-
-        )
-    """)
-
-    conn.commit()
-
-    cutoff = (
-        datetime.now(timezone.utc)
-        - timedelta(hours=24)
-    ).isoformat()
-
-    cur.execute(
-        """
-        DELETE FROM screening_history
-        WHERE timestamp < ?
-        """,
-        (cutoff,)
-    )
-
-    conn.commit()
-
-    conn.close()
-
-
-init_db()
-
-
-# =========================================================
-# HTTP SESSION
-# =========================================================
-
-session = requests.Session()
-
-session.headers.update({
-
-    "User-Agent": (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/131.0.0.0 "
-        "Safari/537.36"
-    ),
-
-    "Accept": (
-        "application/json,"
-        "text/plain,*/*"
-    ),
-
-    "Accept-Language": (
-        "en-US,en;q=0.9"
-    )
-
-})
-
-
-# =========================================================
-# GENERIC GET
-# =========================================================
-
-def api_get(
-    url,
-    params=None,
-    timeout=15
-):
-
-    try:
-
-        response = session.get(
-            url,
-            params=params,
-            timeout=timeout
-        )
-
-        if response.status_code != 200:
-
-            return None
-
-        return response.json()
-
-    except Exception:
-
-        return None
-
-
-# =========================================================
-# OKX INSTRUMENTS
-# =========================================================
-
-@st.cache_data(ttl=60)
-def get_swap_instruments():
-
-    data = api_get(
-        f"{BASE}/api/v5/public/instruments",
-        {
-            "instType": "SWAP"
-        }
-    )
-
-    if not data:
-
-        return []
-
-    if data.get("code") != "0":
-
-        return []
-
-    symbols = []
-
-    for item in data.get(
-        "data",
-        []
-    ):
-
-        inst_id = item.get(
-            "instId",
-            ""
-        )
-
-        if not inst_id.endswith(
-            "-USDT-SWAP"
-        ):
-
-            continue
-
-        if item.get(
-            "state"
-        ) != "live":
-
-            continue
-
-        base_coin = inst_id.replace(
-            "-USDT-SWAP",
-            ""
-        )
-
-        symbols.append({
-
-            "instId": inst_id,
-
-            "pair": (
-                f"{base_coin}-USDT"
-            )
-
-        })
-
-    return symbols
-
-
-# =========================================================
-# OKX TICKERS
-# =========================================================
-
-@st.cache_data(ttl=30)
-def get_tickers():
-
-    data = api_get(
-        f"{BASE}/api/v5/market/tickers",
-        {
-            "instType": "SWAP"
-        }
-    )
-
-    if not data:
-
-        return pd.DataFrame()
-
-    if data.get("code") != "0":
-
-        return pd.DataFrame()
-
-    rows = []
-
-    for item in data.get(
-        "data",
-        []
-    ):
-
-        inst_id = item.get(
-            "instId",
-            ""
-        )
-
-        if not inst_id.endswith(
-            "-USDT-SWAP"
-        ):
-
-            continue
-
-        try:
-
-            last = float(
-                item.get(
-                    "last",
-                    0
-                )
-            )
-
-            open24 = float(
-                item.get(
-                    "open24h",
-                    0
-                )
-            )
-
-            high24 = float(
-                item.get(
-                    "high24h",
-                    0
-                )
-            )
-
-            low24 = float(
-                item.get(
-                    "low24h",
-                    0
-                )
-            )
-
-            volume = float(
-                item.get(
-                    "volCcy24h",
-                    0
-                )
-            )
-
-            if (
-                last <= 0
-                or open24 <= 0
-            ):
-
-                continue
-
-            change = (
-                (last - open24)
-                / open24
-            ) * 100
-
-            range_pct = (
-                (high24 - low24)
-                / last
-            ) * 100
-
-            rows.append({
-
-                "instId": inst_id,
-
-                "pair": inst_id.replace(
-                    "-SWAP",
-                    ""
-                ),
-
-                "price": last,
-
-                "change24h": change,
-
-                "range24h": range_pct,
-
-                "volume": volume
-
-            })
-
-        except Exception:
-
-            continue
-
-    df = pd.DataFrame(
-        rows
-    )
-
-    if df.empty:
-
-        return df
-
-    return (
-        df.sort_values(
-            "volume",
-            ascending=False
-        )
-        .reset_index(drop=True)
-    )
-
-
-# =========================================================
-# OKX CANDLES
-# =========================================================
-
-@st.cache_data(ttl=30)
-def get_candles(
-    inst_id,
-    bar="15m",
-    limit=120
-):
-
-    data = api_get(
-        f"{BASE}/api/v5/market/candles",
-        {
-            "instId": inst_id,
-            "bar": bar,
-            "limit": str(limit)
-        }
-    )
-
-    if not data:
-
-        return pd.DataFrame()
-
-    if data.get("code") != "0":
-
-        return pd.DataFrame()
-
-    rows = data.get(
-        "data",
-        []
-    )
-
-    if not rows:
-
-        return pd.DataFrame()
-
-    records = []
-
-    for item in rows:
-
-        try:
-
-            records.append({
-
-                "timestamp": int(
-                    item[0]
-                ),
-
-                "open": float(
-                    item[1]
-                ),
-
-                "high": float(
-                    item[2]
-                ),
-
-                "low": float(
-                    item[3]
-                ),
-
-                "close": float(
-                    item[4]
-                ),
-
-                "volume": float(
-                    item[5]
-                )
-
-            })
-
-        except Exception:
-
-            continue
-
-    df = pd.DataFrame(
-        records
-    )
-
-    if df.empty:
-
-        return df
-
-    return (
-        df.sort_values(
-            "timestamp"
-        )
-        .reset_index(drop=True)
-    )
-
-
-# =========================================================
-# ATR
-# =========================================================
-
-def calculate_atr(
-    df,
-    period=14
-):
-
-    previous_close = (
-        df["close"].shift(1)
-    )
-
-    tr1 = (
-        df["high"]
-        - df["low"]
-    )
-
-    tr2 = (
-        df["high"]
-        - previous_close
-    ).abs()
-
-    tr3 = (
-        df["low"]
-        - previous_close
-    ).abs()
-
-    tr = pd.concat(
-        [
-            tr1,
-            tr2,
-            tr3
-        ],
-        axis=1
-    ).max(axis=1)
-
-    return tr.rolling(
-        period
-    ).mean()
-
-
-# =========================================================
-# INDICATORS
-# =========================================================
-
-def calculate_indicators(df):
-
-    if df.empty:
-
-        return df
-
-    out = df.copy()
-
-    out["ema20"] = (
-        out["close"]
-        .ewm(
-            span=20,
-            adjust=False
-        )
-        .mean()
-    )
-
-    out["ema50"] = (
-        out["close"]
-        .ewm(
-            span=50,
-            adjust=False
-        )
-        .mean()
-    )
-
-    out["sma20"] = (
-        out["close"]
-        .rolling(20)
-        .mean()
-    )
-
-    out["std20"] = (
-        out["close"]
-        .rolling(20)
-        .std()
-    )
-
-    out["upper_band"] = (
-        out["sma20"]
-        + (
-            2
-            * out["std20"]
-        )
-    )
-
-    out["lower_band"] = (
-        out["sma20"]
-        - (
-            2
-            * out["std20"]
-        )
-    )
-
-    delta = (
-        out["close"].diff()
-    )
-
-    gain = delta.clip(
-        lower=0
-    )
-
-    loss = -delta.clip(
-        upper=0
-    )
-
-    avg_gain = (
-        gain
-        .rolling(14)
-        .mean()
-    )
-
-    avg_loss = (
-        loss
-        .rolling(14)
-        .mean()
-    )
-
-    rs = (
-        avg_gain
-        /
-        avg_loss.replace(
-            0,
-            math.nan
-        )
-    )
-
-    out["rsi"] = (
-        100
-        -
-        (
-            100
-            /
-            (1 + rs)
-        )
-    )
-
-    out["atr"] = calculate_atr(
-        out,
-        14
-    )
-
-    return out
-    # =========================================================
-# FORMAT
-# =========================================================
-
-def fmt_price(value):
-
-    if value is None:
-
-        return "-"
-
-    try:
-
-        value = float(value)
-
-    except Exception:
-
-        return "-"
-
-    if value >= 1000:
-
-        return f"{value:,.2f}"
-
-    if value >= 1:
-
-        return f"{value:,.4f}"
-
-    if value >= 0.01:
-
-        return f"{value:,.6f}"
-
-    return f"{value:.8f}"
-
-
-def fmt_pct(value):
-
-    if value is None:
-
-        return "-"
-
-    try:
-
-        return f"{float(value):.2f}%"
-
-    except Exception:
-
-        return "-"
-
-
-# =========================================================
-# MARKET ANALYSIS
-# =========================================================
-
-def analyze_market(
-    inst_id,
-    pair,
-    timeframe
-):
-
-    bar = TIMEFRAMES.get(
-        timeframe,
-        "15m"
-    )
-
-    df = get_candles(
-        inst_id,
-        bar,
-        120
-    )
-
-    if df.empty:
-
-        return None
-
-    if len(df) < 60:
-
-        return None
-
-    df = calculate_indicators(
-        df
-    )
-
-    latest = df.iloc[-1]
-
-    previous = df.iloc[-2]
-
-    price = float(
-        latest["close"]
-    )
-
-    ema20 = float(
-        latest["ema20"]
-    )
-
-    ema50 = float(
-        latest["ema50"]
-    )
-
-    rsi = latest["rsi"]
-
-    atr = latest["atr"]
-
-    if pd.isna(rsi):
-
-        return None
-
-    if pd.isna(atr):
-
-        return None
-
-    rsi = float(rsi)
-
-    atr = float(atr)
-
-    if price <= 0:
-
-        return None
-
-    atr_pct = (
-        atr / price
-    ) * 100
-
-    ema_distance = (
-        (ema20 - ema50)
-        / price
-    ) * 100
-
-    previous_close = float(
-        previous["close"]
-    )
-
-    momentum = (
-        (price - previous_close)
-        / previous_close
-    ) * 100
-
-    # =====================================================
-    # SCORE
-    # =====================================================
-
-    long_score = 0
-
-    short_score = 0
-
-    if ema20 > ema50:
-
-        long_score += 2
-
-    elif ema20 < ema50:
-
-        short_score += 2
-
-    if price > ema20:
-
-        long_score += 1
-
-    else:
-
-        short_score += 1
-
-    if 50 <= rsi <= 70:
-
-        long_score += 2
-
-    elif 30 <= rsi < 50:
-
-        short_score += 1
-
-    elif rsi > 70:
-
-        short_score += 1
-
-    elif rsi < 30:
-
-        long_score += 1
-
-    if momentum > 0:
-
-        long_score += 1
-
-    elif momentum < 0:
-
-        short_score += 1
-
-    if ema_distance > 0.15:
-
-        long_score += 1
-
-    elif ema_distance < -0.15:
-
-        short_score += 1
-
-    # =====================================================
-    # OUTLOOK
-    # =====================================================
-
-    if long_score >= short_score:
-
-        outlook = "LONG"
-
-        score = long_score
-
-    else:
-
-        outlook = "SHORT"
-
-        score = short_score
-
-    confidence = min(
-        95,
-        max(
-            50,
-            50 + score * 6
-        )
-    )
-
-    # =====================================================
-    # RISK LEVELS
-    # =====================================================
-
-    risk_distance = max(
-        atr * 1.2,
-        price * 0.003
-    )
-
-    reward_distance = (
-        risk_distance * 1.8
-    )
-
-    if outlook == "LONG":
-
-        entry_low = (
-            price
-            - atr * 0.25
-        )
-
-        entry_high = (
-            price
-            + atr * 0.15
-        )
-
-        stop_loss = (
-            price
-            - risk_distance
-        )
-
-        take_profit = (
-            price
-            + reward_distance
-        )
-
-    else:
-
-        entry_low = (
-            price
-            - atr * 0.15
-        )
-
-        entry_high = (
-            price
-            + atr * 0.25
-        )
-
-        stop_loss = (
-            price
-            + risk_distance
-        )
-
-        take_profit = (
-            price
-            - reward_distance
-        )
-
-    return {
-
-        "pair": pair,
-
-        "inst_id": inst_id,
-
-        "timeframe": timeframe,
-
-        "outlook": outlook,
-
-        "entry_low": entry_low,
-
-        "entry_high": entry_high,
-
-        "take_profit": take_profit,
-
-        "stop_loss": stop_loss,
-
-        "current_price": price,
-
-        "movement": momentum,
-
-        "volatility": atr_pct,
-
-        "confidence": confidence,
-
-        "rsi": rsi,
-
-        "ema20": ema20,
-
-        "ema50": ema50
-
-    }
-
-
-# =========================================================
-# TOP MOVERS
-# =========================================================
-
-def select_top_movers(
-    ticker_df,
-    count=15
-):
-
-    if ticker_df.empty:
-
-        return pd.DataFrame()
-
-    df = ticker_df.copy()
-
-    df["activity_score"] = (
-
-        df["change24h"].abs()
-        * 0.65
-
-        +
-
-        df["range24h"]
-        * 0.35
-
-    )
-
-    return (
-        df.sort_values(
-            "activity_score",
-            ascending=False
-        )
-        .head(count)
-        .reset_index(drop=True)
-    )
-
-
-# =========================================================
-# SAVE SIGNAL
-# =========================================================
-
-def save_signal(result):
-
-    conn = get_db()
-
-    cur = conn.cursor()
-
-    timestamp = (
-        datetime.now(
-            timezone.utc
-        ).isoformat()
-    )
-
-    cur.execute(
-        """
-        INSERT INTO screening_history (
-
-            timestamp,
-            pair,
-            timeframe,
-            outlook,
-            entry_low,
-            entry_high,
-            take_profit,
-            stop_loss,
-            current_price,
-            movement,
-            volatility,
-            confidence,
-            status,
-            pnl_percent
-
-        )
-
-        VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?
-        )
-        """,
-        (
-
-            timestamp,
-
-            result["pair"],
-
-            result["timeframe"],
-
-            result["outlook"],
-
-            result["entry_low"],
-
-            result["entry_high"],
-
-            result["take_profit"],
-
-            result["stop_loss"],
-
-            result["current_price"],
-
-            result["movement"],
-
-            result["volatility"],
-
-            result["confidence"],
-
-            "OPEN",
-
-            0
-
-        )
-    )
-
-    conn.commit()
-
-    conn.close()
-
-
-def get_history():
-
-    conn = get_db()
-
-    df = pd.read_sql_query(
-        """
-        SELECT *
-        FROM screening_history
-        ORDER BY id DESC
-        """,
-        conn
-    )
-
-    conn.close()
-
-    return df
-
-
-# =========================================================
-# PERFORMANCE
-# =========================================================
-
-def update_performance():
-
-    conn = get_db()
-
-    df = pd.read_sql_query(
-        """
-        SELECT *
-        FROM screening_history
-        WHERE status = 'OPEN'
-        """,
-        conn
-    )
-
-    if df.empty:
-
-        conn.close()
-
-        return
-
-    cur = conn.cursor()
-
-    for _, row in df.iterrows():
-
-        try:
-
-            created = datetime.fromisoformat(
-                row["timestamp"]
-            )
-
-            if created.tzinfo is None:
-
-                created = created.replace(
-                    tzinfo=timezone.utc
-                )
-
-            age = (
-                datetime.now(
-                    timezone.utc
-                )
-                - created
-            )
-
-            inst_id = (
-                str(row["pair"])
-                .replace(
-                    "-USDT",
-                    "-USDT-SWAP"
-                )
-            )
-
-            bar = TIMEFRAMES.get(
-                row["timeframe"],
-                "15m"
-            )
-
-            candles = get_candles(
-                inst_id,
-                bar,
-                100
-            )
-
-            if candles.empty:
-
-                continue
-
-            signal_price = float(
-                row["current_price"]
-            )
-
-            tp = float(
-                row["take_profit"]
-            )
-
-            sl = float(
-                row["stop_loss"]
-            )
-
-            outlook = row["outlook"]
-
-            status = "OPEN"
-
-            pnl = 0
-
-            signal_ts = (
-                created.timestamp()
-                * 1000
-            )
-
-            candles = candles[
-                candles["timestamp"]
-                >= signal_ts
-            ]
-
-            for _, candle in (
-                candles.iterrows()
-            ):
-
-                high = float(
-                    candle["high"]
-                )
-
-                low = float(
-                    candle["low"]
-                )
-
-                if outlook == "LONG":
-
-                    if low <= sl:
-
-                        status = "LOSS"
-
-                        pnl = (
-                            (
-                                sl
-                                - signal_price
-                            )
-                            / signal_price
-                        ) * 100
-
-                        break
-
-                    if high >= tp:
-
-                        status = "SUCCESS"
-
-                        pnl = (
-                            (
-                                tp
-                                - signal_price
-                            )
-                            / signal_price
-                        ) * 100
-
-                        break
-
-                else:
-
-                    if high >= sl:
-
-                        status = "LOSS"
-
-                        pnl = (
-                            (
-                                signal_price
-                                - sl
-                            )
-                            / signal_price
-                        ) * 100
-
-                        break
-
-                    if low <= tp:
-
-                        status = "SUCCESS"
-
-                        pnl = (
-                            (
-                                signal_price
-                                - tp
-                            )
-                            / signal_price
-                        ) * 100
-
-                        break
-
-            if (
-                status == "OPEN"
-                and age >= timedelta(hours=24)
-            ):
-
-                last_price = (
-
-                    float(
-                        candles.iloc[-1][
-                            "close"
-                        ]
-                    )
-
-                    if not candles.empty
-
-                    else signal_price
-
-                )
-
-                if outlook == "LONG":
-
-                    pnl = (
-                        (
-                            last_price
-                            - signal_price
-                        )
-                        / signal_price
-                    ) * 100
-
-                else:
-
-                    pnl = (
-                        (
-                            signal_price
-                            - last_price
-                        )
-                        / signal_price
-                    ) * 100
-
-                status = (
-                    "SUCCESS"
-                    if pnl > 0
-                    else "LOSS"
-                )
-
-            cur.execute(
-                """
-                UPDATE screening_history
-
-                SET
-                    status = ?,
-                    pnl_percent = ?
-
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    pnl,
-                    int(row["id"])
-                )
-            )
-
-        except Exception:
-
-            continue
-
-    conn.commit()
-
-    conn.close()
-
-
-# =========================================================
-# LBANK SIGNATURE
-# =========================================================
-
-def lbank_signature(
-    params,
-    secret_key
-):
-
-    clean = {
-        key: value
-        for key, value
-        in params.items()
-        if key != "sign"
-    }
-
-    sorted_params = sorted(
-        clean.items(),
-        key=lambda item: item[0]
-    )
-
-    query_string = "&".join(
-
-        f"{key}={value}"
-
-        for key, value
-        in sorted_params
-
-    )
-
-    md5_digest = hashlib.md5(
-        query_string.encode(
-            "utf-8"
-        )
-    ).hexdigest().upper()
-
-    signature = hmac.new(
-
-        secret_key.encode(
-            "utf-8"
-        ),
-
-        md5_digest.encode(
-            "utf-8"
-        ),
-
-        hashlib.sha256
-
-    ).hexdigest()
-
-    return signature
-    # =========================================================
-# LBANK PUBLIC TIME
-# =========================================================
-
-def lbank_get_timestamp():
-
-    try:
-
-        response = session.get(
-
-            f"{LBANK_BASE}"
-            "/cfd/openApi/v1/pub/getTime",
-
-            timeout=10
-
-        )
-
-        result = {
-
-            "http_status":
-                response.status_code,
-
-            "content_type":
-                response.headers.get(
-                    "content-type"
-                ),
-
-            "server":
-                response.headers.get(
-                    "server"
-                )
-
-        }
-
-        try:
-
-            data = response.json()
-
-            result["response"] = data
-
-        except Exception:
-
-            result["response"] = (
-                response.text[:2000]
-            )
-
-            return None, result
-
-        if response.status_code != 200:
-
-            return None, result
-
-        # -------------------------------------------------
-        # LBank may return timestamp directly in data
-        # -------------------------------------------------
-
-        timestamp = None
-
-        data_field = data.get(
-            "data"
-        )
-
-        if isinstance(
-            data_field,
-            (int, float, str)
-        ):
-
-            timestamp = data_field
-
-        elif isinstance(
-            data_field,
-            dict
-        ):
-
-            timestamp = (
-
-                data_field.get(
-                    "timestamp"
-                )
-
-                or
-
-                data_field.get(
-                    "ts"
-                )
-
-                or
-
-                data_field.get(
-                    "time"
-                )
-
-            )
-
-        if timestamp is None:
-
-            timestamp = (
-                data.get(
-                    "timestamp"
-                )
-
-                or
-
-                data.get(
-                    "ts"
-                )
-
-                or
-
-                data.get(
-                    "time"
-                )
-            )
-
-        if timestamp is not None:
-
-            return str(
-                timestamp
-            ), result
-
-        # fallback
-        return (
-            str(
-                int(
-                    datetime.now(
-                        timezone.utc
-                    ).timestamp()
-                    * 1000
-                )
-            ),
-            result
-        )
-
-    except Exception as e:
-
-        return None, {
-
-            "error": str(e)
-
-        }
-
-
-# =========================================================
-# SERVER IP
-# =========================================================
-
-def get_server_ip():
-
-    try:
-
-        response = requests.get(
-
-            "https://api.ipify.org"
-            "?format=json",
-
-            timeout=10
-
-        )
-
-        try:
-
-            data = response.json()
-
-        except Exception:
-
-            data = response.text
-
-        return {
-
-            "http_status":
-                response.status_code,
-
-            "response":
-                data
-
-        }
-
-    except Exception as e:
-
-        return {
-
-            "success": False,
-
-            "error": str(e)
-
-        }
-
-
-# =========================================================
-# LBANK PUBLIC / DOMAIN TEST
-# =========================================================
-
-def test_lbank_public():
-
-    tests = [
-
-        (
-            "LBank Contract API",
-
-            "https://lbkperp.lbank.com/"
-            "cfd/openApi/v1/pub/getTime"
-
-        ),
-
-        (
-            "LBank Contract Domain",
-
-            "https://lbkperp.lbank.com"
-
-        ),
-
-        (
-            "LBank Website",
-
-            "https://www.lbank.com"
-
-        )
-
-    ]
-
-    results = []
-
-    for label, url in tests:
-
-        try:
-
-            response = requests.get(
-
-                url,
-
-                headers={
-
-                    "User-Agent": (
-                        "Mozilla/5.0 "
-                        "(Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) "
-                        "Chrome/131.0.0.0 "
-                        "Safari/537.36"
-                    ),
-
-                    "Accept": (
-                        "application/json,"
-                        "text/plain,*/*"
-                    ),
-
-                    "Accept-Language": (
-                        "en-US,en;q=0.9"
-                    )
-
-                },
-
-                timeout=15
-
-            )
-
-            results.append({
-
-                "test": label,
-
-                "url": url,
-
-                "http_status":
-                    response.status_code,
-
-                "content_type":
-                    response.headers.get(
-                        "content-type"
-                    ),
-
-                "server":
-                    response.headers.get(
-                        "server"
-                    ),
-
-                "response_preview":
-                    response.text[:1000]
-
-            })
-
-        except Exception as e:
-
-            results.append({
-
-                "test": label,
-
-                "url": url,
-
-                "error": str(e)
-
-            })
-
-    return results
-
-
-# =========================================================
-# LBANK PRIVATE CONNECTION
-# =========================================================
-
-def lbank_test_connection():
-
-    # -----------------------------------------------------
-    # GET SECRETS
-    # -----------------------------------------------------
-
-    try:
-
-        api_key = st.secrets[
-            "LBANK_API_KEY"
-        ]
-
-        secret_key = st.secrets[
-            "LBANK_SECRET_KEY"
-        ]
-
-    except Exception:
-
-        return {
-
-            "success": False,
-
-            "stage":
-                "Streamlit Secrets",
-
-            "error": (
-                "LBANK_API_KEY atau "
-                "LBANK_SECRET_KEY "
-                "tidak ditemukan."
-            )
-
-        }
-
-    # -----------------------------------------------------
-    # GET LBank timestamp
-    # -----------------------------------------------------
-
-    timestamp, time_debug = (
-        lbank_get_timestamp()
-    )
-
-    if timestamp is None:
-
-        return {
-
-            "success": False,
-
-            "stage":
-                "LBank public time API",
-
-            "debug":
-                time_debug
-
-        }
-
-    # -----------------------------------------------------
-    # RANDOM ECHOSTR
-    # LBank requires 30-40 alphanumeric chars
-    # -----------------------------------------------------
-
-    echostr = secrets.token_hex(
-        20
-    )
-
-    # -----------------------------------------------------
-    # PARAMETERS USED FOR SIGNATURE
-    #
-    # IMPORTANT:
-    # timestamp
-    # signature_method
-    # echostr
-    #
-    # are included here for signing.
-    # -----------------------------------------------------
-
-    sign_params = {
-
-        "api_key":
-            api_key,
-
-        "asset":
-            "USDT",
-
-        "productGroup":
-            "SwapU",
-
-        "signature_method":
-            "HmacSHA256",
-
-        "timestamp":
-            timestamp,
-
-        "echostr":
-            echostr
-
-    }
-
-    # -----------------------------------------------------
-    # CREATE SIGNATURE
-    # -----------------------------------------------------
-
-    sign = lbank_signature(
-
-        sign_params,
-
-        secret_key
-
-    )
-
-    # -----------------------------------------------------
-    # JSON BODY
-    #
-    # Following official SDK behavior:
-    # timestamp / signature_method / echostr
-    # are NOT sent in JSON body.
-    # -----------------------------------------------------
-
-    body = {
-
-        "api_key":
-            api_key,
-
-        "asset":
-            "USDT",
-
-        "productGroup":
-            "SwapU",
-
-        "sign":
-            sign
-
-    }
-
-    # -----------------------------------------------------
-    # HEADERS
-    # -----------------------------------------------------
-
-    headers = {
-
-        "Content-Type":
-            "application/json",
-
-        "timestamp":
-            timestamp,
-
-        "signature_method":
-            "HmacSHA256",
-
-        "echostr":
-            echostr,
-
-        "User-Agent":
-            "lbank-connector-python"
-
-    }
-
-    # -----------------------------------------------------
-    # PRIVATE REQUEST
-    # -----------------------------------------------------
-
-    try:
-
-        response = session.post(
-
-            f"{LBANK_BASE}"
-            "/cfd/openApi/v1/prv/account",
-
-            json=body,
-
-            headers=headers,
-
-            timeout=15
-
-        )
-
-    except Exception as e:
-
-        return {
-
-            "success": False,
-
-            "stage":
-                "LBank account API",
-
-            "error":
-                str(e)
-
-        }
-
-    # -----------------------------------------------------
-    # RESPONSE
-    # -----------------------------------------------------
-
-    try:
-
-        data = response.json()
-
-        result = {
-
-            "success":
-                response.status_code == 200,
-
-            "stage":
-                "LBank account API",
-
-            "http_status":
-                response.status_code,
-
-            "response":
-                data
-
-        }
-
-        if response.status_code != 200:
-
-            result["success"] = False
-
-        return result
-
-    except Exception:
-
-        return {
-
-            "success": False,
-
-            "stage":
-                "LBank account API",
-
-            "http_status":
-                response.status_code,
-
-            "content_type":
-                response.headers.get(
-                    "content-type"
-                ),
-
-            "server":
-                response.headers.get(
-                    "server"
-                ),
-
-            "response":
-                response.text[:3000]
-
-        }
-
-
-# =========================================================
-# TRADINGVIEW
-# =========================================================
-
-def show_tradingview(pair):
-
-    if not pair:
-
-        return
-
-    symbol = pair.replace(
-        "-USDT",
-        "USDT"
-    )
-
-    html = f"""
-
-    <div style="
-        width:100%;
-        height:600px;
-        border-radius:12px;
-        overflow:hidden;
-    ">
-
-        <div
-            class="tradingview-widget-container"
-            style="
-                height:100%;
-                width:100%
-            "
-        >
-
-            <div
-                id="tradingview_chart"
-                style="
-                    height:100%;
-                    width:100%
-                "
-            ></div>
-
-            <script
-                type="text/javascript"
-                src="https://s3.tradingview.com/tv.js">
-            </script>
-
-            <script type="text/javascript">
-
-            new TradingView.widget({{
-
-                "autosize": true,
-
-                "symbol":
-                    "OKX:{symbol}.P",
-
-                "interval":
-                    "15",
-
-                "timezone":
-                    "Asia/Jakarta",
-
-                "theme":
-                    "dark",
-
-                "style":
-                    "1",
-
-                "locale":
-                    "en",
-
-                "enable_publishing":
-                    false,
-
-                "allow_symbol_change":
-                    true,
-
-                "container_id":
-                    "tradingview_chart"
-
-            }});
-
-            </script>
-
-        </div>
-
-    </div>
-
-    """
-
-    components.html(
-
-        html,
-
-        height=620
-
-    )
+MAX_MOVER = 12
 
 
 # =========================================================
 # HEADER
 # =========================================================
 
-st.title(
-    "⚡ 0xmwY Kraken"
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 2rem;
+}
+
+.title {
+    font-size: 40px;
+    font-weight: 800;
+}
+
+.sub {
+    opacity: .7;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="title">0xmwY Kraken</div>',
+    unsafe_allow_html=True
 )
 
-st.caption(
-    "pengembang : Lutfi Andreyansah"
+st.markdown(
+    '<div class="sub">pengembang : Lutfi Andreyansah</div>',
+    unsafe_allow_html=True
 )
 
 st.caption(
     '"Ai tak akan mampu gantikan jiwa jiwa manusia #dyor"'
 )
 
-st.divider()
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+def connect_db():
+    return sqlite3.connect(DB)
+
+
+def init_db():
+
+    con = connect_db()
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            pair TEXT,
+            outlook TEXT,
+            movement REAL,
+            volatility REAL,
+            entry_low REAL,
+            entry_high REAL,
+            tp REAL,
+            sl REAL,
+            confidence REAL,
+            status TEXT DEFAULT 'OPEN',
+            pnl_pct REAL DEFAULT 0,
+            resolved_at TEXT
+        )
+    """)
+
+    con.commit()
+    con.close()
+
+
+def migrate_db():
+
+    con = connect_db()
+
+    cols = [
+        x[1]
+        for x in con.execute(
+            "PRAGMA table_info(history)"
+        ).fetchall()
+    ]
+
+    additions = {
+        "sl": "REAL",
+        "status": "TEXT DEFAULT 'OPEN'",
+        "pnl_pct": "REAL DEFAULT 0",
+        "resolved_at": "TEXT"
+    }
+
+    for name, typ in additions.items():
+
+        if name not in cols:
+
+            con.execute(
+                f"ALTER TABLE history ADD COLUMN {name} {typ}"
+            )
+
+    con.commit()
+    con.close()
+
+
+def clean_db():
+
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(hours=24)
+    ).isoformat()
+
+    con = connect_db()
+
+    con.execute(
+        "DELETE FROM history WHERE timestamp < ?",
+        (cutoff,)
+    )
+
+    con.commit()
+    con.close()
+
+
+def save_results(results):
+
+    if not results:
+        return
+
+    con = connect_db()
+
+    for x in results:
+
+        con.execute("""
+            INSERT INTO history (
+                timestamp,
+                pair,
+                outlook,
+                movement,
+                volatility,
+                entry_low,
+                entry_high,
+                tp,
+                sl,
+                confidence,
+                status,
+                pnl_pct
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, 'OPEN', 0
+            )
+        """, (
+            x["timestamp"],
+            x["pair"],
+            x["outlook"],
+            x["movement"],
+            x["volatility"],
+            x["entry_low"],
+            x["entry_high"],
+            x["tp"],
+            x["sl"],
+            x["confidence"]
+        ))
+
+    con.commit()
+    con.close()
+
+
+def get_history():
+
+    con = connect_db()
+
+    df = pd.read_sql_query(
+        "SELECT * FROM history ORDER BY timestamp DESC",
+        con
+    )
+
+    con.close()
+
+    return df
+
+
+init_db()
+migrate_db()
+clean_db()
 
 
 # =========================================================
-# LBANK CONNECTION
+# API
 # =========================================================
 
-st.subheader(
-    "LBank Connection"
-)
+def api(path, params):
 
-col1, col2, col3 = (
-    st.columns(3)
-)
+    try:
 
-
-with col1:
-
-    if st.button(
-
-        "🌐 CHECK SERVER IP",
-
-        use_container_width=True
-
-    ):
-
-        st.json(
-            get_server_ip()
+        r = requests.get(
+            BASE + path,
+            params=params,
+            timeout=15
         )
 
+        r.raise_for_status()
 
-with col2:
+        data = r.json()
 
-    if st.button(
+        if data.get("code") != "0":
+            return None
 
-        "🔎 TEST LBANK PUBLIC",
+        return data.get("data")
 
-        use_container_width=True
+    except Exception:
 
-    ):
+        return None
 
-        st.json(
-            test_lbank_public()
+
+# =========================================================
+# TICKERS
+# =========================================================
+
+@st.cache_data(ttl=30)
+def get_tickers():
+
+    data = api(
+        "/api/v5/market/tickers",
+        {"instType": "SWAP"}
+    )
+
+    if not data:
+        return pd.DataFrame()
+
+    rows = []
+
+    for x in data:
+
+        inst = x.get("instId", "")
+
+        if not inst.endswith("-USDT-SWAP"):
+            continue
+
+        try:
+
+            price = float(x["last"])
+            op = float(x["open24h"])
+            high = float(x["high24h"])
+            low = float(x["low24h"])
+
+        except Exception:
+
+            continue
+
+        if price <= 0 or op <= 0:
+            continue
+
+        movement = (
+            (price - op)
+            / op
+        ) * 100
+
+        volatility = (
+            (high - low)
+            / op
+        ) * 100
+
+        rows.append({
+            "inst": inst,
+            "pair": inst.replace("-SWAP", ""),
+            "price": price,
+            "movement": movement,
+            "abs_move": abs(movement),
+            "volatility": volatility
+        })
+
+    return pd.DataFrame(rows)
+
+
+# =========================================================
+# TOP MOVER
+# =========================================================
+
+def top_movers(df):
+
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    move_max = max(
+        df["abs_move"].max(),
+        0.000001
+    )
+
+    vol_max = max(
+        df["volatility"].max(),
+        0.000001
+    )
+
+    df["score"] = (
+        df["abs_move"]
+        / move_max
+        * 0.60
+        +
+        df["volatility"]
+        / vol_max
+        * 0.40
+    )
+
+    return (
+        df.sort_values(
+            "score",
+            ascending=False
+        )
+        .head(MAX_MOVER)
+        .reset_index(drop=True)
+    )
+
+
+# =========================================================
+# CANDLES
+# =========================================================
+
+@st.cache_data(ttl=30)
+def get_candles(inst, bar):
+
+    data = api(
+        "/api/v5/market/candles",
+        {
+            "instId": inst,
+            "bar": bar,
+            "limit": "80"
+        }
+    )
+
+    if not data:
+        return pd.DataFrame()
+
+    rows = []
+
+    for c in data:
+
+        try:
+
+            rows.append({
+                "open": float(c[1]),
+                "high": float(c[2]),
+                "low": float(c[3]),
+                "close": float(c[4]),
+                "volume": float(c[5])
+            })
+
+        except Exception:
+
+            pass
+
+    if not rows:
+        return pd.DataFrame()
+
+    return (
+        pd.DataFrame(rows)
+        .iloc[::-1]
+        .reset_index(drop=True)
+    )
+
+
+# =========================================================
+# TIMEFRAME ANALYSIS
+# =========================================================
+
+def analyze_tf(df):
+
+    if len(df) < 30:
+        return None
+
+    close = df["close"]
+
+    ema9 = close.ewm(
+        span=9,
+        adjust=False
+    ).mean()
+
+    ema21 = close.ewm(
+        span=21,
+        adjust=False
+    ).mean()
+
+    momentum = (
+        (
+            close.iloc[-1]
+            - close.iloc[-6]
+        )
+        / close.iloc[-6]
+    ) * 100
+
+    bull = 0
+    bear = 0
+
+    if ema9.iloc[-1] > ema21.iloc[-1]:
+        bull += 1
+    else:
+        bear += 1
+
+    if momentum > 0:
+        bull += 1
+    else:
+        bear += 1
+
+    if close.iloc[-1] > close.iloc[-2]:
+        bull += 1
+    else:
+        bear += 1
+
+    if bull > bear:
+
+        side = "LONG"
+        confidence = bull / 3 * 100
+
+    else:
+
+        side = "SHORT"
+        confidence = bear / 3 * 100
+
+    high = close.tail(20).max()
+    low = close.tail(20).min()
+
+    volatility = (
+        (high - low)
+        / close.iloc[-1]
+    ) * 100
+
+    return {
+        "side": side,
+        "confidence": confidence,
+        "price": close.iloc[-1],
+        "volatility": volatility
+    }
+
+
+# =========================================================
+# COIN ANALYSIS
+# =========================================================
+
+def analyze_coin(inst):
+
+    tf = {}
+
+    for name, bar in TIMEFRAMES.items():
+
+        df = get_candles(
+            inst,
+            bar
         )
 
+        result = analyze_tf(df)
 
-with col3:
+        if result:
+            tf[name] = result
 
-    if st.button(
+    if len(tf) < 2:
+        return None
 
-        "🔗 TEST LBANK CONNECTION",
+    longs = sum(
+        x["side"] == "LONG"
+        for x in tf.values()
+    )
 
-        use_container_width=True
+    shorts = sum(
+        x["side"] == "SHORT"
+        for x in tf.values()
+    )
 
-    ):
+    if longs >= 2:
 
-        with st.spinner(
-            "Testing LBank connection..."
-        ):
+        side = "LONG"
 
-            result = (
-                lbank_test_connection()
-            )
+    elif shorts >= 2:
 
-        if result.get(
-            "success"
-        ):
+        side = "SHORT"
 
-            st.success(
-                "✅ LBank connection successful."
-            )
+    else:
+
+        return None
+
+    price = list(
+        tf.values()
+    )[-1]["price"]
+
+    vol = sum(
+        x["volatility"]
+        for x in tf.values()
+    ) / len(tf)
+
+    distance = max(
+        price * (vol / 100) * 0.20,
+        price * 0.001
+    )
+
+    if side == "LONG":
+
+        entry_low = price - distance
+        entry_high = price
+        tp = price + distance * 2
+        sl = price - distance
+
+    else:
+
+        entry_low = price
+        entry_high = price + distance
+        tp = price - distance * 2
+        sl = price + distance
+
+    confidence = (
+        max(longs, shorts)
+        / len(tf)
+        * 100
+    )
+
+    return {
+        "outlook": side,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "tp": tp,
+        "sl": sl,
+        "confidence": confidence
+    }
+
+
+# =========================================================
+# SCREENING
+# =========================================================
+
+def screening():
+
+    tickers = get_tickers()
+
+    if tickers.empty:
+        return []
+
+    movers = top_movers(tickers)
+
+    results = []
+
+    for _, mover in movers.iterrows():
+
+        result = analyze_coin(
+            mover["inst"]
+        )
+
+        if not result:
+            continue
+
+        now = datetime.now(timezone.utc)
+
+        results.append({
+            "timestamp": now.isoformat(),
+            "pair": mover["pair"],
+            "outlook": result["outlook"],
+            "movement": mover["movement"],
+            "volatility": mover["volatility"],
+            "entry_low": result["entry_low"],
+            "entry_high": result["entry_high"],
+            "tp": result["tp"],
+            "sl": result["sl"],
+            "confidence": result["confidence"]
+        })
+
+    return sorted(
+        results,
+        key=lambda x: (
+            x["confidence"],
+            abs(x["movement"])
+        ),
+        reverse=True
+    )
+
+
+# =========================================================
+# CHECK PROFIT / LOSS
+# =========================================================
+
+def resolve_history():
+
+    con = connect_db()
+
+    rows = con.execute("""
+        SELECT
+            id,
+            pair,
+            outlook,
+            entry_low,
+            entry_high,
+            tp,
+            sl
+        FROM history
+        WHERE status = 'OPEN'
+    """).fetchall()
+
+    for row in rows:
+
+        trade_id = row[0]
+        pair = row[1]
+        side = row[2]
+        entry_low = row[3]
+        entry_high = row[4]
+        tp = row[5]
+        sl = row[6]
+
+        if sl is None:
+            continue
+
+        df = get_candles(
+            pair + "-SWAP",
+            "15m"
+        )
+
+        if df.empty:
+            continue
+
+        current = float(
+            df["close"].iloc[-1]
+        )
+
+        status = None
+        pnl = 0
+
+        if side == "LONG":
+
+            if current >= tp:
+
+                status = "SUCCESS"
+
+                pnl = (
+                    (tp - entry_high)
+                    / entry_high
+                ) * 100
+
+            elif current <= sl:
+
+                status = "LOSS"
+
+                pnl = (
+                    (sl - entry_high)
+                    / entry_high
+                ) * 100
 
         else:
 
-            st.error(
-                "❌ LBank connection failed."
-            )
+            if current <= tp:
 
-        st.json(result)
+                status = "SUCCESS"
 
+                pnl = (
+                    (entry_low - tp)
+                    / entry_low
+                ) * 100
 
-st.divider()
+            elif current >= sl:
+
+                status = "LOSS"
+
+                pnl = (
+                    (entry_low - sl)
+                    / entry_low
+                ) * 100
+
+        if status:
+
+            con.execute("""
+                UPDATE history
+                SET
+                    status = ?,
+                    pnl_pct = ?,
+                    resolved_at = ?
+                WHERE id = ?
+            """, (
+                status,
+                pnl,
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
+                trade_id
+            ))
+
+    con.commit()
+    con.close()
+   # =========================================================
+# SESSION
+# =========================================================
+
+if "results" not in st.session_state:
+    st.session_state.results = []
+
+if "selected_pair" not in st.session_state:
+    st.session_state.selected_pair = None
+
+if "last_scan" not in st.session_state:
+    st.session_state.last_scan = "-"
 
 
 # =========================================================
-# SIDEBAR
+# SCREEN NOW
 # =========================================================
 
-with st.sidebar:
-
-    st.header(
-        "Scanner Settings"
-    )
-
-    selected_timeframe = (
-        st.selectbox(
-
-            "Timeframe",
-
-            [
-                "15M",
-                "30M",
-                "1H"
-            ],
-
-            index=0
-
-        )
-    )
-
-    number_of_candidates = (
-        st.slider(
-
-            "Top candidates",
-
-            min_value=5,
-
-            max_value=25,
-
-            value=12
-
-        )
-    )
-
-    run_scan = st.button(
-
-        "🚀 RUN SCANNER",
-
-        use_container_width=True
-
-    )
-
-    st.caption(
-        "Scanner hanya membaca market data."
-    )
-
-    st.caption(
-        "Auto trading belum diaktifkan."
-    )
-    # =========================================================
-# UPDATE PERFORMANCE
-# =========================================================
-
-try:
-
-    update_performance()
-
-except Exception:
-
-    pass
-
-
-# =========================================================
-# MARKET SCANNER
-# =========================================================
-
-st.subheader(
-    "Market Scanner"
-)
-
-if run_scan:
+if st.button(
+    "⚡ SCREEN NOW",
+    use_container_width=True
+):
 
     with st.spinner(
-        "Scanning market..."
+        "Mencari coin volatile..."
     ):
 
-        tickers = get_tickers()
+        results = screening()
 
-        if tickers.empty:
+    st.session_state.results = results
 
-            st.error(
-                "Gagal mengambil market data."
-            )
+    st.session_state.last_scan = (
+        datetime.now().strftime(
+            "%H:%M:%S"
+        )
+    )
 
-        else:
+    save_results(results)
 
-            candidates = (
-                select_top_movers(
-                    tickers,
-                    number_of_candidates
-                )
-            )
+    clean_db()
 
-            results = []
+    st.rerun()
 
-            progress = st.progress(
-                0
-            )
 
-            total = len(
-                candidates
-            )
+st.caption(
+    f"Last screening: "
+    f"{st.session_state.last_scan}"
+)
 
-            for index, row in (
-                candidates.iterrows()
-            ):
 
-                result = analyze_market(
+# =========================================================
+# UPDATE PROFIT / LOSS
+# =========================================================
 
-                    row["instId"],
-
-                    row["pair"],
-
-                    selected_timeframe
-
-                )
-
-                if result:
-
-                    results.append(
-                        result
-                    )
-
-                progress.progress(
-
-                    int(
-
-                        (
-                            (index + 1)
-                            / total
-                        )
-
-                        * 100
-
-                    )
-
-                )
-
-            progress.empty()
-
-            if not results:
-
-                st.warning(
-                    "Tidak ada setup yang "
-                    "memenuhi kondisi."
-                )
-
-            else:
-
-                results = sorted(
-
-                    results,
-
-                    key=lambda x:
-                        x["confidence"],
-
-                    reverse=True
-
-                )
-
-                st.session_state[
-                    "scan_results"
-                ] = results
-
-                # -----------------------------------------
-                # Save top signals
-                # -----------------------------------------
-
-                for result in results[:10]:
-
-                    save_signal(
-                        result
-                    )
-
-                st.success(
-
-                    f"Scanner selesai — "
-                    f"{len(results)} "
-                    f"setup ditemukan."
-
-                )
+resolve_history()
 
 
 # =========================================================
 # CURRENT OUTLOOK
 # =========================================================
 
-scan_results = (
-    st.session_state.get(
-        "scan_results",
-        []
-    )
+st.divider()
+
+st.subheader(
+    "Current Outlook"
 )
 
+results = st.session_state.results
 
-if scan_results:
+longs = [
+    x for x in results
+    if x["outlook"] == "LONG"
+]
 
-    st.subheader(
-        "Current Outlook"
-    )
+shorts = [
+    x for x in results
+    if x["outlook"] == "SHORT"
+]
 
-    for result in scan_results:
+col1, col2 = st.columns(2)
 
-        outlook = result[
-            "outlook"
-        ]
 
-        icon = (
+# =========================================================
+# CARD
+# =========================================================
 
-            "🟢"
+def show_card(x, key, icon):
 
-            if outlook == "LONG"
+    with st.container(border=True):
 
-            else
-
-            "🔴"
-
+        st.subheader(
+            x["pair"]
         )
 
-        st.markdown(
-
-            f"### {icon} "
-            f"{result['pair']} — "
-            f"OUTLOOK {outlook}"
-
+        st.write(
+            f"**Entry:** "
+            f"{x['entry_low']:.8g}"
+            f" → "
+            f"{x['entry_high']:.8g}"
         )
 
-        col1, col2, col3 = (
-            st.columns(3)
+        st.write(
+            f"**Take Profit:** "
+            f"{x['tp']:.8g}"
         )
 
-        with col1:
+        st.write(
+            f"**Stop Loss:** "
+            f"{x['sl']:.8g}"
+        )
 
-            st.metric(
+        st.caption(
+            f"Movement: "
+            f"{x['movement']:.2f}%"
+        )
 
-                "Current Price",
+        st.caption(
+            f"Volatility: "
+            f"{x['volatility']:.2f}%"
+        )
 
-                fmt_price(
-
-                    result[
-                        "current_price"
-                    ]
-
-                )
-
-            )
-
-            st.metric(
-
-                "Movement",
-
-                fmt_pct(
-
-                    result[
-                        "movement"
-                    ]
-
-                )
-
-            )
-
-        with col2:
-
-            st.write(
-                "**Entry Range**"
-            )
-
-            st.write(
-
-                f"{fmt_price(result['entry_low'])}"
-                f" — "
-                f"{fmt_price(result['entry_high'])}"
-
-            )
-
-            st.write(
-                "**Take Profit**"
-            )
-
-            st.write(
-
-                fmt_price(
-
-                    result[
-                        "take_profit"
-                    ]
-
-                )
-
-            )
-
-        with col3:
-
-            st.write(
-                "**Stop Loss**"
-            )
-
-            st.write(
-
-                fmt_price(
-
-                    result[
-                        "stop_loss"
-                    ]
-
-                )
-
-            )
-
-            st.write(
-
-                "Volatility: "
-                f"{fmt_pct(result['volatility'])}"
-
-            )
-
-            st.write(
-
-                "Confidence: "
-                f"{result['confidence']:.0f}%"
-
-            )
-
-        chart_key = (
-
-            "chart_"
-
-            + result["pair"]
-
-            + "_"
-
-            + result["timeframe"]
-
+        st.caption(
+            f"Confidence: "
+            f"{x['confidence']:.0f}%"
         )
 
         if st.button(
-
-            f"📈 Open Chart — "
-            f"{result['pair']}",
-
-            key=chart_key,
-
+            f"{icon} Open Chart • {x['pair']}",
+            key=key,
             use_container_width=True
-
         ):
 
-            st.session_state[
-                "selected_pair"
-            ] = result["pair"]
+            st.session_state.selected_pair = (
+                x["pair"]
+            )
 
             st.rerun()
 
-        st.divider()
-
 
 # =========================================================
-# SELECTED CHART
+# LONG
 # =========================================================
 
-selected_pair = (
-    st.session_state.get(
-        "selected_pair"
+with col1:
+
+    st.markdown(
+        "### 🟢 OUTLOOK LONG"
     )
-)
+
+    if not longs:
+
+        st.info(
+            "Belum ada setup LONG."
+        )
+
+    for i, x in enumerate(longs):
+
+        show_card(
+            x,
+            f"long_{i}_{x['pair']}",
+            "📈"
+        )
 
 
-if selected_pair:
+# =========================================================
+# SHORT
+# =========================================================
+
+with col2:
+
+    st.markdown(
+        "### 🔴 OUTLOOK SHORT"
+    )
+
+    if not shorts:
+
+        st.info(
+            "Belum ada setup SHORT."
+        )
+
+    for i, x in enumerate(shorts):
+
+        show_card(
+            x,
+            f"short_{i}_{x['pair']}",
+            "📉"
+        )
+
+
+# =========================================================
+# TRADINGVIEW LIVE CHART
+# =========================================================
+
+if st.session_state.selected_pair:
+
+    pair = st.session_state.selected_pair
+
+    st.divider()
 
     st.subheader(
-
-        f"Chart — "
-        f"{selected_pair}"
-
+        f"Live Chart • {pair}"
     )
 
-    show_tradingview(
-        selected_pair
+    symbol = (
+        "OKX:"
+        + pair.replace("-", "")
+        + ".P"
     )
 
-    if st.button(
+    html = f"""
+    <div
+        id="tradingview_chart"
+        style="height:650px;width:100%;">
+    </div>
 
-        "✖ Close Chart",
+    <script
+        src="https://s3.tradingview.com/tv.js">
+    </script>
 
-        use_container_width=True
+    <script>
+    new TradingView.widget({{
+        "autosize": true,
+        "symbol": "{symbol}",
+        "interval": "15",
+        "timezone": "Asia/Jakarta",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "enable_publishing": false,
+        "hide_top_toolbar": false,
+        "hide_legend": false,
+        "save_image": false,
+        "container_id": "tradingview_chart"
+    }});
+    </script>
+    """
 
-    ):
-
-        st.session_state[
-            "selected_pair"
-        ] = None
-
-        st.rerun()
+    components.html(
+        html,
+        height=670
+    )
 
 
 # =========================================================
-# 24H PERFORMANCE
+# HISTORY 24 HOURS
 # =========================================================
+
+st.divider()
 
 st.subheader(
-    "24H Screening Performance"
+    "Screening History — 24 Hours"
 )
+
+clean_db()
 
 history = get_history()
 
 if history.empty:
 
     st.info(
-        "Belum ada screening history."
+        "Belum ada history screening."
     )
 
 else:
 
-    total = len(
-        history
+    display = history.copy()
+
+    display["timestamp"] = (
+        pd.to_datetime(
+            display["timestamp"],
+            utc=True
+        )
+        .dt.tz_convert(
+            "Asia/Jakarta"
+        )
+        .dt.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     )
 
-    success = len(
-
-        history[
-            history["status"]
-            == "SUCCESS"
-        ]
-
+    display = display.rename(
+        columns={
+            "timestamp": "Time",
+            "pair": "Pair",
+            "outlook": "Outlook",
+            "movement": "Movement %",
+            "volatility": "Volatility %",
+            "entry_low": "Entry Low",
+            "entry_high": "Entry High",
+            "tp": "Take Profit",
+            "sl": "Stop Loss",
+            "confidence": "Confidence %",
+            "status": "Status",
+            "pnl_pct": "P/L %"
+        }
     )
 
-    loss = len(
-
-        history[
-            history["status"]
-            == "LOSS"
-        ]
-
+    display["Movement %"] = (
+        display["Movement %"].round(2)
     )
+
+    display["Volatility %"] = (
+        display["Volatility %"].round(2)
+    )
+
+    display["Confidence %"] = (
+        display["Confidence %"].round(0)
+    )
+
+    display["P/L %"] = (
+        display["P/L %"].round(2)
+    )
+
+    st.dataframe(
+        display[
+            [
+                "Time",
+                "Pair",
+                "Outlook",
+                "Movement %",
+                "Volatility %",
+                "Entry Low",
+                "Entry High",
+                "Take Profit",
+                "Stop Loss",
+                "Confidence %",
+                "Status",
+                "P/L %"
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# =========================================================
+# 24H PERFORMANCE
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "24H Performance"
+)
+
+perf = get_history()
+
+if perf.empty:
+
+    st.info(
+        "Belum ada data performance 24 jam."
+    )
+
+else:
+
+    success = perf[
+        perf["status"] == "SUCCESS"
+    ]
+
+    losses = perf[
+        perf["status"] == "LOSS"
+    ]
+
+    opened = perf[
+        perf["status"] == "OPEN"
+    ]
 
     closed = (
-        success
-        + loss
+        len(success)
+        + len(losses)
     )
 
-    if closed > 0:
+    winrate = (
+        len(success)
+        / closed
+        * 100
+        if closed
+        else 0
+    )
 
-        winrate = (
+    total_profit = (
+        success["pnl_pct"].sum()
+    )
 
-            success
-            / closed
+    total_loss = (
+        losses["pnl_pct"].sum()
+    )
 
-        ) * 100
+    net_pnl = (
+        total_profit
+        + total_loss
+    )
+
+    a, b, c, d, e = st.columns(5)
+
+    with a:
+
+        st.metric(
+            "SUCCESS",
+            len(success)
+        )
+
+    with b:
+
+        st.metric(
+            "LOSS",
+            len(losses)
+        )
+
+    with c:
+
+        st.metric(
+            "WIN RATE",
+            f"{winrate:.2f}%"
+        )
+
+    with d:
+
+        st.metric(
+            "PROFIT",
+            f"+{total_profit:.2f}%"
+        )
+
+    with e:
+
+        st.metric(
+            "NET P/L",
+            f"{net_pnl:+.2f}%"
+        )
+
+    st.caption(
+        f"Open trades: {len(opened)}"
+    )
+
+
+    # =====================================================
+    # SUCCESS PAIRS
+    # =====================================================
+
+    st.markdown(
+        "### ✅ Pair Sukses"
+    )
+
+    if success.empty:
+
+        st.info(
+            "Belum ada pair yang mencapai TP."
+        )
 
     else:
 
-        winrate = 0
-
-    avg_pnl = (
-        history[
-            "pnl_percent"
-        ].mean()
-    )
-
-    c1, c2, c3, c4, c5 = (
-        st.columns(5)
-    )
-
-    with c1:
-
-        st.metric(
-            "Total",
-            total
-        )
-
-    with c2:
-
-        st.metric(
-            "Success",
-            success
-        )
-
-    with c3:
-
-        st.metric(
-            "Loss",
-            loss
-        )
-
-    with c4:
-
-        st.metric(
-
-            "Win Rate",
-
-            f"{winrate:.2f}%"
-
-        )
-
-    with c5:
-
-        st.metric(
-
-            "Avg P/L",
-
-            f"{avg_pnl:.2f}%"
-
-        )
-
-    display_history = (
-        history.copy()
-    )
-
-    display_history[
-        "timestamp"
-    ] = pd.to_datetime(
-
-        display_history[
-            "timestamp"
-        ],
-
-        errors="coerce"
-
-    )
-
-    display_history = (
-
-        display_history[
-
+        s = success[
             [
-
-                "timestamp",
-
                 "pair",
-
-                "timeframe",
-
                 "outlook",
-
-                "entry_low",
-
-                "entry_high",
-
-                "take_profit",
-
-                "stop_loss",
-
-                "current_price",
-
-                "movement",
-
-                "volatility",
-
-                "confidence",
-
-                "status",
-
-                "pnl_percent"
-
+                "pnl_pct",
+                "resolved_at"
             ]
+        ].copy()
 
+        s.columns = [
+            "Pair",
+            "Outlook",
+            "Profit %",
+            "Resolved"
         ]
 
-        .head(50)
+        s["Profit %"] = (
+            s["Profit %"].round(2)
+        )
 
+        s["Resolved"] = (
+            pd.to_datetime(
+                s["Resolved"],
+                utc=True
+            )
+            .dt.tz_convert(
+                "Asia/Jakarta"
+            )
+            .dt.strftime(
+                "%H:%M:%S"
+            )
+        )
+
+        st.dataframe(
+            s,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+    # =====================================================
+    # LOSS PAIRS
+    # =====================================================
+
+    st.markdown(
+        "### ❌ Pair Loss"
     )
 
-    display_history.columns = [
+    if losses.empty:
 
-        "Time",
+        st.info(
+            "Belum ada pair yang terkena SL."
+        )
 
-        "Pair",
+    else:
 
-        "TF",
+        l = losses[
+            [
+                "pair",
+                "outlook",
+                "pnl_pct",
+                "resolved_at"
+            ]
+        ].copy()
 
-        "Outlook",
+        l.columns = [
+            "Pair",
+            "Outlook",
+            "Loss %",
+            "Resolved"
+        ]
 
-        "Entry Low",
+        l["Loss %"] = (
+            l["Loss %"].round(2)
+        )
 
-        "Entry High",
+        l["Resolved"] = (
+            pd.to_datetime(
+                l["Resolved"],
+                utc=True
+            )
+            .dt.tz_convert(
+                "Asia/Jakarta"
+            )
+            .dt.strftime(
+                "%H:%M:%S"
+            )
+        )
 
-        "Take Profit",
-
-        "Stop Loss",
-
-        "Price",
-
-        "Movement %",
-
-        "Volatility %",
-
-        "Confidence",
-
-        "Status",
-
-        "P/L %"
-
-    ]
-
-    st.dataframe(
-
-        display_history,
-
-        use_container_width=True,
-
-        hide_index=True
-
-    )
+        st.dataframe(
+            l,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 # =========================================================
@@ -2703,15 +1256,5 @@ else:
 st.divider()
 
 st.caption(
-
-    "0xmwY Kraken • "
-    "Market scanner & simulated performance"
-
-)
-
-st.caption(
-
-    "⚠️ Signal bukan financial advice. "
-    "DYOR sebelum mengambil keputusan trading."
-
-)
+    "Informational scanner — DYOR."
+) 
