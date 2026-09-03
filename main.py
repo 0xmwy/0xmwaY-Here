@@ -3,6 +3,9 @@ import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import sqlite3
+import hashlib
+import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 
 st.set_page_config(
@@ -12,6 +15,7 @@ st.set_page_config(
 )
 
 BASE = "https://www.okx.com"
+LBANK_BASE = "https://lbkperp.lbank.com"
 DB = "screening_history.db"
 
 TIMEFRAMES = {
@@ -235,6 +239,80 @@ def api(path, params):
 
 
 # =========================================================
+# LBANK AUTHENTICATION
+# =========================================================
+
+def lbank_signature(params, secret_key):
+
+    params = dict(params)
+
+    params.pop("sign", None)
+
+    query = "&".join(
+        f"{k}={params[k]}"
+        for k in sorted(params)
+    )
+
+    prepared = hashlib.md5(
+        query.encode()
+    ).hexdigest().upper()
+
+    return hmac.new(
+        secret_key.encode(),
+        prepared.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def lbank_test_connection():
+
+    try:
+
+        api_key = st.secrets["LBANK_API_KEY"]
+        secret_key = st.secrets["LBANK_SECRET_KEY"]
+
+        timestamp = str(
+            int(datetime.now().timestamp() * 1000)
+        )
+
+        echostr = secrets.token_hex(20)[:32]
+
+        params = {
+            "api_key": api_key,
+            "asset": "USDT",
+            "productGroup": "SwapU",
+            "signature_method": "HmacSHA256",
+            "timestamp": timestamp,
+            "echostr": echostr
+        }
+
+        params["sign"] = lbank_signature(
+            params,
+            secret_key
+        )
+
+        response = requests.post(
+            LBANK_BASE + "/cfd/openApi/v1/prv/account",
+            headers={
+                "Content-Type": "application/json",
+                "timestamp": timestamp,
+                "signature_method": "HmacSHA256",
+                "echostr": echostr
+            },
+            json=params,
+            timeout=15
+        )
+
+        return response.json()
+
+    except Exception as e:
+
+        return {
+            "error": str(e)
+        }
+
+
+# =========================================================
 # TICKERS
 # =========================================================
 
@@ -292,9 +370,7 @@ def get_tickers():
         })
 
     return pd.DataFrame(rows)
-
-
-# =========================================================
+    # =========================================================
 # TOP MOVER
 # =========================================================
 
@@ -591,9 +667,7 @@ def screening():
         ),
         reverse=True
     )
-
-
-# =========================================================
+    # =========================================================
 # CHECK PROFIT / LOSS
 # =========================================================
 
@@ -702,7 +776,9 @@ def resolve_history():
 
     con.commit()
     con.close()
-    # =========================================================
+
+
+# =========================================================
 # SESSION
 # =========================================================
 
@@ -714,6 +790,40 @@ if "selected_pair" not in st.session_state:
 
 if "last_scan" not in st.session_state:
     st.session_state.last_scan = "-"
+
+
+# =========================================================
+# LBANK CONNECTION TEST
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "LBank Connection"
+)
+
+if st.button(
+    "🔗 TEST LBANK CONNECTION",
+    use_container_width=True
+):
+
+    with st.spinner(
+        "Connecting to LBank..."
+    ):
+
+        result = lbank_test_connection()
+
+    if result.get("result") is True:
+
+        st.success(
+            "✅ LBank connected successfully."
+        )
+
+    else:
+
+        st.error(
+            f"LBank connection failed: {result}"
+        )
 
 
 # =========================================================
@@ -942,9 +1052,7 @@ if st.session_state.selected_pair:
     components.html(
         html,
         height=670
-    )
-
-
+                )
 # =========================================================
 # HISTORY 24 HOURS
 # =========================================================
@@ -1257,4 +1365,4 @@ st.divider()
 
 st.caption(
     "Informational scanner — DYOR."
-)
+)                
