@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import secrets
 import math
+
 from datetime import datetime, timedelta, timezone
 
 
@@ -22,7 +23,11 @@ st.set_page_config(
 )
 
 BASE = "https://www.okx.com"
-LBANK_BASE = "https://lbkperp.lbank.com"
+
+LBANK_BASE = (
+    "https://lbkperp.lbank.com"
+)
+
 DB = "screening_history.db"
 
 TIMEFRAMES = {
@@ -37,6 +42,7 @@ TIMEFRAMES = {
 # =========================================================
 
 def get_db():
+
     return sqlite3.connect(
         DB,
         check_same_thread=False
@@ -46,25 +52,42 @@ def get_db():
 def init_db():
 
     conn = get_db()
+
     cur = conn.cursor()
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS screening_history (
+
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+
             timestamp TEXT,
+
             pair TEXT,
+
             timeframe TEXT,
+
             outlook TEXT,
+
             entry_low REAL,
+
             entry_high REAL,
+
             take_profit REAL,
+
             stop_loss REAL,
+
             current_price REAL,
+
             movement REAL,
+
             volatility REAL,
+
             confidence REAL,
+
             status TEXT DEFAULT 'OPEN',
+
             pnl_percent REAL DEFAULT 0
+
         )
     """)
 
@@ -84,6 +107,7 @@ def init_db():
     )
 
     conn.commit()
+
     conn.close()
 
 
@@ -97,20 +121,25 @@ init_db()
 session = requests.Session()
 
 session.headers.update({
+
     "User-Agent": (
         "Mozilla/5.0 "
         "(Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "Chrome/131.0.0.0 "
+        "Safari/537.36"
     ),
+
     "Accept": (
         "application/json,"
         "text/plain,*/*"
     ),
+
     "Accept-Language": (
         "en-US,en;q=0.9"
     )
+
 })
 
 
@@ -126,23 +155,25 @@ def api_get(
 
     try:
 
-        r = session.get(
+        response = session.get(
             url,
             params=params,
             timeout=timeout
         )
 
-        if r.status_code != 200:
+        if response.status_code != 200:
+
             return None
 
-        return r.json()
+        return response.json()
 
     except Exception:
+
         return None
 
 
 # =========================================================
-# MARKET DATA
+# OKX INSTRUMENTS
 # =========================================================
 
 @st.cache_data(ttl=60)
@@ -155,12 +186,20 @@ def get_swap_instruments():
         }
     )
 
-    if not data or data.get("code") != "0":
+    if not data:
+
+        return []
+
+    if data.get("code") != "0":
+
         return []
 
     symbols = []
 
-    for item in data.get("data", []):
+    for item in data.get(
+        "data",
+        []
+    ):
 
         inst_id = item.get(
             "instId",
@@ -170,9 +209,13 @@ def get_swap_instruments():
         if not inst_id.endswith(
             "-USDT-SWAP"
         ):
+
             continue
 
-        if item.get("state") != "live":
+        if item.get(
+            "state"
+        ) != "live":
+
             continue
 
         base_coin = inst_id.replace(
@@ -181,12 +224,21 @@ def get_swap_instruments():
         )
 
         symbols.append({
+
             "instId": inst_id,
-            "pair": f"{base_coin}-USDT"
+
+            "pair": (
+                f"{base_coin}-USDT"
+            )
+
         })
 
     return symbols
 
+
+# =========================================================
+# OKX TICKERS
+# =========================================================
 
 @st.cache_data(ttl=30)
 def get_tickers():
@@ -198,14 +250,22 @@ def get_tickers():
         }
     )
 
-    if not data or data.get("code") != "0":
+    if not data:
+
+        return pd.DataFrame()
+
+    if data.get("code") != "0":
+
         return pd.DataFrame()
 
     rows = []
 
-    for x in data.get("data", []):
+    for item in data.get(
+        "data",
+        []
+    ):
 
-        inst_id = x.get(
+        inst_id = item.get(
             "instId",
             ""
         )
@@ -213,31 +273,51 @@ def get_tickers():
         if not inst_id.endswith(
             "-USDT-SWAP"
         ):
+
             continue
 
         try:
 
             last = float(
-                x.get("last", 0)
+                item.get(
+                    "last",
+                    0
+                )
             )
 
             open24 = float(
-                x.get("open24h", 0)
+                item.get(
+                    "open24h",
+                    0
+                )
             )
 
             high24 = float(
-                x.get("high24h", 0)
+                item.get(
+                    "high24h",
+                    0
+                )
             )
 
             low24 = float(
-                x.get("low24h", 0)
+                item.get(
+                    "low24h",
+                    0
+                )
             )
 
             volume = float(
-                x.get("volCcy24h", 0)
+                item.get(
+                    "volCcy24h",
+                    0
+                )
             )
 
-            if last <= 0 or open24 <= 0:
+            if (
+                last <= 0
+                or open24 <= 0
+            ):
+
                 continue
 
             change = (
@@ -251,23 +331,34 @@ def get_tickers():
             ) * 100
 
             rows.append({
+
                 "instId": inst_id,
+
                 "pair": inst_id.replace(
                     "-SWAP",
                     ""
                 ),
+
                 "price": last,
+
                 "change24h": change,
+
                 "range24h": range_pct,
+
                 "volume": volume
+
             })
 
         except Exception:
+
             continue
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(
+        rows
+    )
 
     if df.empty:
+
         return df
 
     return (
@@ -278,6 +369,10 @@ def get_tickers():
         .reset_index(drop=True)
     )
 
+
+# =========================================================
+# OKX CANDLES
+# =========================================================
 
 @st.cache_data(ttl=30)
 def get_candles(
@@ -295,7 +390,12 @@ def get_candles(
         }
     )
 
-    if not data or data.get("code") != "0":
+    if not data:
+
+        return pd.DataFrame()
+
+    if data.get("code") != "0":
+
         return pd.DataFrame()
 
     rows = data.get(
@@ -304,29 +404,53 @@ def get_candles(
     )
 
     if not rows:
+
         return pd.DataFrame()
 
     records = []
 
-    for x in rows:
+    for item in rows:
 
         try:
 
             records.append({
-                "timestamp": int(x[0]),
-                "open": float(x[1]),
-                "high": float(x[2]),
-                "low": float(x[3]),
-                "close": float(x[4]),
-                "volume": float(x[5])
+
+                "timestamp": int(
+                    item[0]
+                ),
+
+                "open": float(
+                    item[1]
+                ),
+
+                "high": float(
+                    item[2]
+                ),
+
+                "low": float(
+                    item[3]
+                ),
+
+                "close": float(
+                    item[4]
+                ),
+
+                "volume": float(
+                    item[5]
+                )
+
             })
 
         except Exception:
+
             continue
 
-    df = pd.DataFrame(records)
+    df = pd.DataFrame(
+        records
+    )
 
     if df.empty:
+
         return df
 
     return (
@@ -338,7 +462,7 @@ def get_candles(
 
 
 # =========================================================
-# INDICATORS
+# ATR
 # =========================================================
 
 def calculate_atr(
@@ -346,7 +470,9 @@ def calculate_atr(
     period=14
 ):
 
-    prev_close = df["close"].shift(1)
+    previous_close = (
+        df["close"].shift(1)
+    )
 
     tr1 = (
         df["high"]
@@ -355,16 +481,20 @@ def calculate_atr(
 
     tr2 = (
         df["high"]
-        - prev_close
+        - previous_close
     ).abs()
 
     tr3 = (
         df["low"]
-        - prev_close
+        - previous_close
     ).abs()
 
     tr = pd.concat(
-        [tr1, tr2, tr3],
+        [
+            tr1,
+            tr2,
+            tr3
+        ],
         axis=1
     ).max(axis=1)
 
@@ -373,9 +503,14 @@ def calculate_atr(
     ).mean()
 
 
+# =========================================================
+# INDICATORS
+# =========================================================
+
 def calculate_indicators(df):
 
     if df.empty:
+
         return df
 
     out = df.copy()
@@ -412,15 +547,23 @@ def calculate_indicators(df):
 
     out["upper_band"] = (
         out["sma20"]
-        + 2 * out["std20"]
+        + (
+            2
+            * out["std20"]
+        )
     )
 
     out["lower_band"] = (
         out["sma20"]
-        - 2 * out["std20"]
+        - (
+            2
+            * out["std20"]
+        )
     )
 
-    delta = out["close"].diff()
+    delta = (
+        out["close"].diff()
+    )
 
     gain = delta.clip(
         lower=0
@@ -444,7 +587,8 @@ def calculate_indicators(df):
 
     rs = (
         avg_gain
-        / avg_loss.replace(
+        /
+        avg_loss.replace(
             0,
             math.nan
         )
@@ -452,9 +596,11 @@ def calculate_indicators(df):
 
     out["rsi"] = (
         100
-        - (
+        -
+        (
             100
-            / (1 + rs)
+            /
+            (1 + rs)
         )
     )
 
@@ -471,20 +617,27 @@ def calculate_indicators(df):
 def fmt_price(value):
 
     if value is None:
+
         return "-"
 
     try:
+
         value = float(value)
+
     except Exception:
+
         return "-"
 
     if value >= 1000:
+
         return f"{value:,.2f}"
 
     if value >= 1:
+
         return f"{value:,.4f}"
 
     if value >= 0.01:
+
         return f"{value:,.6f}"
 
     return f"{value:.8f}"
@@ -493,11 +646,15 @@ def fmt_price(value):
 def fmt_pct(value):
 
     if value is None:
+
         return "-"
 
     try:
+
         return f"{float(value):.2f}%"
+
     except Exception:
+
         return "-"
 
 
@@ -522,12 +679,20 @@ def analyze_market(
         120
     )
 
-    if df.empty or len(df) < 60:
+    if df.empty:
+
         return None
 
-    df = calculate_indicators(df)
+    if len(df) < 60:
+
+        return None
+
+    df = calculate_indicators(
+        df
+    )
 
     latest = df.iloc[-1]
+
     previous = df.iloc[-2]
 
     price = float(
@@ -543,15 +708,23 @@ def analyze_market(
     )
 
     rsi = latest["rsi"]
+
     atr = latest["atr"]
 
-    if pd.isna(rsi) or pd.isna(atr):
+    if pd.isna(rsi):
+
+        return None
+
+    if pd.isna(atr):
+
         return None
 
     rsi = float(rsi)
+
     atr = float(atr)
 
     if price <= 0:
+
         return None
 
     atr_pct = (
@@ -572,46 +745,76 @@ def analyze_market(
         / previous_close
     ) * 100
 
+    # =====================================================
+    # SCORE
+    # =====================================================
+
     long_score = 0
+
     short_score = 0
 
     if ema20 > ema50:
+
         long_score += 2
+
     elif ema20 < ema50:
+
         short_score += 2
 
     if price > ema20:
+
         long_score += 1
+
     else:
+
         short_score += 1
 
     if 50 <= rsi <= 70:
+
         long_score += 2
+
     elif 30 <= rsi < 50:
+
         short_score += 1
+
     elif rsi > 70:
+
         short_score += 1
+
     elif rsi < 30:
+
         long_score += 1
 
     if momentum > 0:
+
         long_score += 1
+
     elif momentum < 0:
+
         short_score += 1
 
     if ema_distance > 0.15:
+
         long_score += 1
+
     elif ema_distance < -0.15:
+
         short_score += 1
+
+    # =====================================================
+    # OUTLOOK
+    # =====================================================
 
     if long_score >= short_score:
 
         outlook = "LONG"
+
         score = long_score
 
     else:
 
         outlook = "SHORT"
+
         score = short_score
 
     confidence = min(
@@ -621,6 +824,10 @@ def analyze_market(
             50 + score * 6
         )
     )
+
+    # =====================================================
+    # RISK LEVELS
+    # =====================================================
 
     risk_distance = max(
         atr * 1.2,
@@ -634,55 +841,79 @@ def analyze_market(
     if outlook == "LONG":
 
         entry_low = (
-            price - atr * 0.25
+            price
+            - atr * 0.25
         )
 
         entry_high = (
-            price + atr * 0.15
+            price
+            + atr * 0.15
         )
 
         stop_loss = (
-            price - risk_distance
+            price
+            - risk_distance
         )
 
         take_profit = (
-            price + reward_distance
+            price
+            + reward_distance
         )
 
     else:
 
         entry_low = (
-            price - atr * 0.15
+            price
+            - atr * 0.15
         )
 
         entry_high = (
-            price + atr * 0.25
+            price
+            + atr * 0.25
         )
 
         stop_loss = (
-            price + risk_distance
+            price
+            + risk_distance
         )
 
         take_profit = (
-            price - reward_distance
+            price
+            - reward_distance
         )
 
     return {
+
         "pair": pair,
+
         "inst_id": inst_id,
+
         "timeframe": timeframe,
+
         "outlook": outlook,
+
         "entry_low": entry_low,
+
         "entry_high": entry_high,
+
         "take_profit": take_profit,
+
         "stop_loss": stop_loss,
+
         "current_price": price,
+
         "movement": momentum,
+
         "volatility": atr_pct,
+
         "confidence": confidence,
+
         "rsi": rsi,
+
         "ema20": ema20,
+
         "ema50": ema50
+
     }
 
 
@@ -696,16 +927,21 @@ def select_top_movers(
 ):
 
     if ticker_df.empty:
+
         return pd.DataFrame()
 
     df = ticker_df.copy()
 
     df["activity_score"] = (
+
         df["change24h"].abs()
         * 0.65
+
         +
+
         df["range24h"]
         * 0.35
+
     )
 
     return (
@@ -725,15 +961,19 @@ def select_top_movers(
 def save_signal(result):
 
     conn = get_db()
+
     cur = conn.cursor()
 
-    timestamp = datetime.now(
-        timezone.utc
-    ).isoformat()
+    timestamp = (
+        datetime.now(
+            timezone.utc
+        ).isoformat()
+    )
 
     cur.execute(
         """
         INSERT INTO screening_history (
+
             timestamp,
             pair,
             timeframe,
@@ -748,28 +988,49 @@ def save_signal(result):
             confidence,
             status,
             pnl_percent
+
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?
+        )
         """,
         (
+
             timestamp,
+
             result["pair"],
+
             result["timeframe"],
+
             result["outlook"],
+
             result["entry_low"],
+
             result["entry_high"],
+
             result["take_profit"],
+
             result["stop_loss"],
+
             result["current_price"],
+
             result["movement"],
+
             result["volatility"],
+
             result["confidence"],
+
             "OPEN",
+
             0
+
         )
     )
 
     conn.commit()
+
     conn.close()
 
 
@@ -811,6 +1072,7 @@ def update_performance():
     if df.empty:
 
         conn.close()
+
         return
 
     cur = conn.cursor()
@@ -830,7 +1092,9 @@ def update_performance():
                 )
 
             age = (
-                datetime.now(timezone.utc)
+                datetime.now(
+                    timezone.utc
+                )
                 - created
             )
 
@@ -854,6 +1118,7 @@ def update_performance():
             )
 
             if candles.empty:
+
                 continue
 
             signal_price = float(
@@ -871,6 +1136,7 @@ def update_performance():
             outlook = row["outlook"]
 
             status = "OPEN"
+
             pnl = 0
 
             signal_ts = (
@@ -883,7 +1149,9 @@ def update_performance():
                 >= signal_ts
             ]
 
-            for _, candle in candles.iterrows():
+            for _, candle in (
+                candles.iterrows()
+            ):
 
                 high = float(
                     candle["high"]
@@ -900,7 +1168,10 @@ def update_performance():
                         status = "LOSS"
 
                         pnl = (
-                            (sl - signal_price)
+                            (
+                                sl
+                                - signal_price
+                            )
                             / signal_price
                         ) * 100
 
@@ -911,7 +1182,10 @@ def update_performance():
                         status = "SUCCESS"
 
                         pnl = (
-                            (tp - signal_price)
+                            (
+                                tp
+                                - signal_price
+                            )
                             / signal_price
                         ) * 100
 
@@ -924,7 +1198,10 @@ def update_performance():
                         status = "LOSS"
 
                         pnl = (
-                            (signal_price - sl)
+                            (
+                                signal_price
+                                - sl
+                            )
                             / signal_price
                         ) * 100
 
@@ -935,7 +1212,10 @@ def update_performance():
                         status = "SUCCESS"
 
                         pnl = (
-                            (signal_price - tp)
+                            (
+                                signal_price
+                                - tp
+                            )
                             / signal_price
                         ) * 100
 
@@ -947,24 +1227,36 @@ def update_performance():
             ):
 
                 last_price = (
+
                     float(
-                        candles.iloc[-1]["close"]
+                        candles.iloc[-1][
+                            "close"
+                        ]
                     )
+
                     if not candles.empty
+
                     else signal_price
+
                 )
 
                 if outlook == "LONG":
 
                     pnl = (
-                        (last_price - signal_price)
+                        (
+                            last_price
+                            - signal_price
+                        )
                         / signal_price
                     ) * 100
 
                 else:
 
                     pnl = (
-                        (signal_price - last_price)
+                        (
+                            signal_price
+                            - last_price
+                        )
                         / signal_price
                     ) * 100
 
@@ -977,7 +1269,11 @@ def update_performance():
             cur.execute(
                 """
                 UPDATE screening_history
-                SET status = ?, pnl_percent = ?
+
+                SET
+                    status = ?,
+                    pnl_percent = ?
+
                 WHERE id = ?
                 """,
                 (
@@ -988,9 +1284,11 @@ def update_performance():
             )
 
         except Exception:
+
             continue
 
     conn.commit()
+
     conn.close()
 
 
@@ -1004,100 +1302,174 @@ def lbank_signature(
 ):
 
     clean = {
-        k: v
-        for k, v in params.items()
-        if k != "sign"
+        key: value
+        for key, value
+        in params.items()
+        if key != "sign"
     }
 
     sorted_params = sorted(
         clean.items(),
-        key=lambda x: x[0]
+        key=lambda item: item[0]
     )
 
     query_string = "&".join(
-        f"{k}={v}"
-        for k, v in sorted_params
+
+        f"{key}={value}"
+
+        for key, value
+        in sorted_params
+
     )
 
-    md5_hash = hashlib.md5(
-        query_string.encode()
+    md5_digest = hashlib.md5(
+        query_string.encode(
+            "utf-8"
+        )
     ).hexdigest().upper()
 
-    return hmac.new(
-        secret_key.encode(),
-        md5_hash.encode(),
+    signature = hmac.new(
+
+        secret_key.encode(
+            "utf-8"
+        ),
+
+        md5_digest.encode(
+            "utf-8"
+        ),
+
         hashlib.sha256
+
     ).hexdigest()
+
+    return signature
     # =========================================================
-# LBANK TIME
+# LBANK PUBLIC TIME
 # =========================================================
 
 def lbank_get_timestamp():
 
     try:
 
-        r = session.get(
-            f"{LBANK_BASE}/cfd/openApi/v1/pub/getTime",
+        response = session.get(
+
+            f"{LBANK_BASE}"
+            "/cfd/openApi/v1/pub/getTime",
+
             timeout=10
+
         )
 
         result = {
-            "http_status": r.status_code,
-            "content_type": r.headers.get(
-                "content-type"
-            ),
-            "server": r.headers.get(
-                "server"
-            )
+
+            "http_status":
+                response.status_code,
+
+            "content_type":
+                response.headers.get(
+                    "content-type"
+                ),
+
+            "server":
+                response.headers.get(
+                    "server"
+                )
+
         }
 
         try:
 
-            data = r.json()
+            data = response.json()
 
             result["response"] = data
 
         except Exception:
 
             result["response"] = (
-                r.text[:2000]
+                response.text[:2000]
             )
-
-        if r.status_code != 200:
 
             return None, result
 
-        try:
+        if response.status_code != 200:
 
-            data = r.json()
+            return None, result
+
+        # -------------------------------------------------
+        # LBank may return timestamp directly in data
+        # -------------------------------------------------
+
+        timestamp = None
+
+        data_field = data.get(
+            "data"
+        )
+
+        if isinstance(
+            data_field,
+            (int, float, str)
+        ):
+
+            timestamp = data_field
+
+        elif isinstance(
+            data_field,
+            dict
+        ):
 
             timestamp = (
-                data.get("data", {})
-                .get("timestamp")
+
+                data_field.get(
+                    "timestamp"
+                )
+
                 or
-                data.get("data", {})
-                .get("ts")
+
+                data_field.get(
+                    "ts"
+                )
+
                 or
-                data.get("data", {})
-                .get("time")
-                or
-                data.get("timestamp")
-                or
-                data.get("ts")
+
+                data_field.get(
+                    "time"
+                )
+
             )
 
-            if timestamp:
+        if timestamp is None:
 
-                return str(timestamp), result
+            timestamp = (
+                data.get(
+                    "timestamp"
+                )
 
-        except Exception:
-            pass
+                or
 
+                data.get(
+                    "ts"
+                )
+
+                or
+
+                data.get(
+                    "time"
+                )
+            )
+
+        if timestamp is not None:
+
+            return str(
+                timestamp
+            ), result
+
+        # fallback
         return (
             str(
                 int(
-                    datetime.now()
-                    .timestamp()
+                    datetime.now(
+                        timezone.utc
+                    ).timestamp()
                     * 1000
                 )
             ),
@@ -1107,7 +1479,9 @@ def lbank_get_timestamp():
     except Exception as e:
 
         return None, {
+
             "error": str(e)
+
         }
 
 
@@ -1119,26 +1493,41 @@ def get_server_ip():
 
     try:
 
-        r = requests.get(
-            "https://api.ipify.org?format=json",
+        response = requests.get(
+
+            "https://api.ipify.org"
+            "?format=json",
+
             timeout=10
+
         )
 
         try:
-            response = r.json()
+
+            data = response.json()
+
         except Exception:
-            response = r.text
+
+            data = response.text
 
         return {
-            "http_status": r.status_code,
-            "response": response
+
+            "http_status":
+                response.status_code,
+
+            "response":
+                data
+
         }
 
     except Exception as e:
 
         return {
+
             "success": False,
+
             "error": str(e)
+
         }
 
 
@@ -1152,18 +1541,24 @@ def test_lbank_public():
 
         (
             "LBank Contract API",
+
             "https://lbkperp.lbank.com/"
             "cfd/openApi/v1/pub/getTime"
+
         ),
 
         (
             "LBank Contract Domain",
+
             "https://lbkperp.lbank.com"
+
         ),
 
         (
             "LBank Website",
+
             "https://www.lbank.com"
+
         )
 
     ]
@@ -1174,9 +1569,12 @@ def test_lbank_public():
 
         try:
 
-            r = requests.get(
+            response = requests.get(
+
                 url,
+
                 headers={
+
                     "User-Agent": (
                         "Mozilla/5.0 "
                         "(Windows NT 10.0; Win64; x64) "
@@ -1185,15 +1583,20 @@ def test_lbank_public():
                         "Chrome/131.0.0.0 "
                         "Safari/537.36"
                     ),
+
                     "Accept": (
                         "application/json,"
                         "text/plain,*/*"
                     ),
+
                     "Accept-Language": (
                         "en-US,en;q=0.9"
                     )
+
                 },
+
                 timeout=15
+
             )
 
             results.append({
@@ -1202,23 +1605,21 @@ def test_lbank_public():
 
                 "url": url,
 
-                "http_status": r.status_code,
+                "http_status":
+                    response.status_code,
 
-                "content_type": (
-                    r.headers.get(
+                "content_type":
+                    response.headers.get(
                         "content-type"
-                    )
-                ),
+                    ),
 
-                "server": (
-                    r.headers.get(
+                "server":
+                    response.headers.get(
                         "server"
-                    )
-                ),
+                    ),
 
-                "response_preview": (
-                    r.text[:1000]
-                )
+                "response_preview":
+                    response.text[:1000]
 
             })
 
@@ -1243,6 +1644,10 @@ def test_lbank_public():
 
 def lbank_test_connection():
 
+    # -----------------------------------------------------
+    # GET SECRETS
+    # -----------------------------------------------------
+
     try:
 
         api_key = st.secrets[
@@ -1256,108 +1661,231 @@ def lbank_test_connection():
     except Exception:
 
         return {
+
             "success": False,
-            "stage": "Streamlit Secrets",
+
+            "stage":
+                "Streamlit Secrets",
+
             "error": (
                 "LBANK_API_KEY atau "
                 "LBANK_SECRET_KEY "
                 "tidak ditemukan."
             )
+
         }
+
+    # -----------------------------------------------------
+    # GET LBank timestamp
+    # -----------------------------------------------------
 
     timestamp, time_debug = (
         lbank_get_timestamp()
     )
 
-    if not timestamp:
+    if timestamp is None:
 
         return {
+
             "success": False,
-            "stage": "LBank public time API",
-            "debug": time_debug
+
+            "stage":
+                "LBank public time API",
+
+            "debug":
+                time_debug
+
         }
 
-    echostr = secrets.token_hex(20)
+    # -----------------------------------------------------
+    # RANDOM ECHOSTR
+    # LBank requires 30-40 alphanumeric chars
+    # -----------------------------------------------------
 
-    params = {
-        "api_key": api_key,
-        "asset": "USDT",
-        "productGroup": "SwapU",
-        "signature_method": "HmacSHA256",
-        "timestamp": timestamp,
-        "echostr": echostr
-    }
-
-    sign = lbank_signature(
-        params,
-        secret_key
+    echostr = secrets.token_hex(
+        20
     )
 
-    params["sign"] = sign
+    # -----------------------------------------------------
+    # PARAMETERS USED FOR SIGNATURE
+    #
+    # IMPORTANT:
+    # timestamp
+    # signature_method
+    # echostr
+    #
+    # are included here for signing.
+    # -----------------------------------------------------
+
+    sign_params = {
+
+        "api_key":
+            api_key,
+
+        "asset":
+            "USDT",
+
+        "productGroup":
+            "SwapU",
+
+        "signature_method":
+            "HmacSHA256",
+
+        "timestamp":
+            timestamp,
+
+        "echostr":
+            echostr
+
+    }
+
+    # -----------------------------------------------------
+    # CREATE SIGNATURE
+    # -----------------------------------------------------
+
+    sign = lbank_signature(
+
+        sign_params,
+
+        secret_key
+
+    )
+
+    # -----------------------------------------------------
+    # JSON BODY
+    #
+    # Following official SDK behavior:
+    # timestamp / signature_method / echostr
+    # are NOT sent in JSON body.
+    # -----------------------------------------------------
+
+    body = {
+
+        "api_key":
+            api_key,
+
+        "asset":
+            "USDT",
+
+        "productGroup":
+            "SwapU",
+
+        "sign":
+            sign
+
+    }
+
+    # -----------------------------------------------------
+    # HEADERS
+    # -----------------------------------------------------
 
     headers = {
-        "Content-Type": "application/json",
-        "timestamp": timestamp,
-        "signature_method": "HmacSHA256",
-        "echostr": echostr
+
+        "Content-Type":
+            "application/json",
+
+        "timestamp":
+            timestamp,
+
+        "signature_method":
+            "HmacSHA256",
+
+        "echostr":
+            echostr,
+
+        "User-Agent":
+            "lbank-connector-python"
+
     }
+
+    # -----------------------------------------------------
+    # PRIVATE REQUEST
+    # -----------------------------------------------------
 
     try:
 
-        r = session.post(
-            f"{LBANK_BASE}/cfd/openApi/v1/prv/account",
-            json=params,
+        response = session.post(
+
+            f"{LBANK_BASE}"
+            "/cfd/openApi/v1/prv/account",
+
+            json=body,
+
             headers=headers,
+
             timeout=15
+
         )
 
     except Exception as e:
 
         return {
+
             "success": False,
-            "stage": "LBank account API",
-            "error": str(e)
+
+            "stage":
+                "LBank account API",
+
+            "error":
+                str(e)
+
         }
+
+    # -----------------------------------------------------
+    # RESPONSE
+    # -----------------------------------------------------
 
     try:
 
-        data = r.json()
+        data = response.json()
 
-        if r.status_code == 200:
+        result = {
 
-            return {
-                "success": True,
-                "stage": "LBank account API",
-                "http_status": r.status_code,
-                "response": data
-            }
+            "success":
+                response.status_code == 200,
 
-        return {
-            "success": False,
-            "stage": "LBank account API",
-            "http_status": r.status_code,
-            "response": data
+            "stage":
+                "LBank account API",
+
+            "http_status":
+                response.status_code,
+
+            "response":
+                data
+
         }
+
+        if response.status_code != 200:
+
+            result["success"] = False
+
+        return result
 
     except Exception:
 
         return {
+
             "success": False,
-            "stage": "LBank account API",
-            "http_status": r.status_code,
-            "content_type": (
-                r.headers.get(
+
+            "stage":
+                "LBank account API",
+
+            "http_status":
+                response.status_code,
+
+            "content_type":
+                response.headers.get(
                     "content-type"
-                )
-            ),
-            "server": (
-                r.headers.get(
+                ),
+
+            "server":
+                response.headers.get(
                     "server"
-                )
-            ),
-            "response": (
-                r.text[:3000]
-            )
+                ),
+
+            "response":
+                response.text[:3000]
+
         }
 
 
@@ -1368,6 +1896,7 @@ def lbank_test_connection():
 def show_tradingview(pair):
 
     if not pair:
+
         return
 
     symbol = pair.replace(
@@ -1376,6 +1905,7 @@ def show_tradingview(pair):
     )
 
     html = f"""
+
     <div style="
         width:100%;
         height:600px;
@@ -1385,12 +1915,18 @@ def show_tradingview(pair):
 
         <div
             class="tradingview-widget-container"
-            style="height:100%;width:100%"
+            style="
+                height:100%;
+                width:100%
+            "
         >
 
             <div
                 id="tradingview_chart"
-                style="height:100%;width:100%"
+                style="
+                    height:100%;
+                    width:100%
+                "
             ></div>
 
             <script
@@ -1401,27 +1937,52 @@ def show_tradingview(pair):
             <script type="text/javascript">
 
             new TradingView.widget({{
+
                 "autosize": true,
-                "symbol": "OKX:{symbol}.P",
-                "interval": "15",
-                "timezone": "Asia/Jakarta",
-                "theme": "dark",
-                "style": "1",
-                "locale": "en",
-                "enable_publishing": false,
-                "allow_symbol_change": true,
-                "container_id": "tradingview_chart"
+
+                "symbol":
+                    "OKX:{symbol}.P",
+
+                "interval":
+                    "15",
+
+                "timezone":
+                    "Asia/Jakarta",
+
+                "theme":
+                    "dark",
+
+                "style":
+                    "1",
+
+                "locale":
+                    "en",
+
+                "enable_publishing":
+                    false,
+
+                "allow_symbol_change":
+                    true,
+
+                "container_id":
+                    "tradingview_chart"
+
             }});
 
             </script>
 
         </div>
+
     </div>
+
     """
 
     components.html(
+
         html,
+
         height=620
+
     )
 
 
@@ -1452,14 +2013,19 @@ st.subheader(
     "LBank Connection"
 )
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3 = (
+    st.columns(3)
+)
 
 
 with col1:
 
     if st.button(
+
         "🌐 CHECK SERVER IP",
+
         use_container_width=True
+
     ):
 
         st.json(
@@ -1470,8 +2036,11 @@ with col1:
 with col2:
 
     if st.button(
+
         "🔎 TEST LBANK PUBLIC",
+
         use_container_width=True
+
     ):
 
         st.json(
@@ -1482,8 +2051,11 @@ with col2:
 with col3:
 
     if st.button(
+
         "🔗 TEST LBANK CONNECTION",
+
         use_container_width=True
+
     ):
 
         with st.spinner(
@@ -1494,7 +2066,9 @@ with col3:
                 lbank_test_connection()
             )
 
-        if result.get("success"):
+        if result.get(
+            "success"
+        ):
 
             st.success(
                 "✅ LBank connection successful."
@@ -1522,26 +2096,42 @@ with st.sidebar:
         "Scanner Settings"
     )
 
-    selected_timeframe = st.selectbox(
-        "Timeframe",
-        [
-            "15M",
-            "30M",
-            "1H"
-        ],
-        index=0
+    selected_timeframe = (
+        st.selectbox(
+
+            "Timeframe",
+
+            [
+                "15M",
+                "30M",
+                "1H"
+            ],
+
+            index=0
+
+        )
     )
 
-    number_of_candidates = st.slider(
-        "Top candidates",
-        min_value=5,
-        max_value=25,
-        value=12
+    number_of_candidates = (
+        st.slider(
+
+            "Top candidates",
+
+            min_value=5,
+
+            max_value=25,
+
+            value=12
+
+        )
     )
 
     run_scan = st.button(
+
         "🚀 RUN SCANNER",
+
         use_container_width=True
+
     )
 
     st.caption(
@@ -1597,18 +2187,26 @@ if run_scan:
 
             results = []
 
-            progress = st.progress(0)
+            progress = st.progress(
+                0
+            )
 
-            total = len(candidates)
+            total = len(
+                candidates
+            )
 
             for index, row in (
                 candidates.iterrows()
             ):
 
                 result = analyze_market(
+
                     row["instId"],
+
                     row["pair"],
+
                     selected_timeframe
+
                 )
 
                 if result:
@@ -1618,12 +2216,18 @@ if run_scan:
                     )
 
                 progress.progress(
+
                     int(
+
                         (
                             (index + 1)
                             / total
-                        ) * 100
+                        )
+
+                        * 100
+
                     )
+
                 )
 
             progress.empty()
@@ -1638,16 +2242,23 @@ if run_scan:
             else:
 
                 results = sorted(
+
                     results,
-                    key=lambda x: x[
-                        "confidence"
-                    ],
+
+                    key=lambda x:
+                        x["confidence"],
+
                     reverse=True
+
                 )
 
                 st.session_state[
                     "scan_results"
                 ] = results
+
+                # -----------------------------------------
+                # Save top signals
+                # -----------------------------------------
 
                 for result in results[:10]:
 
@@ -1656,8 +2267,11 @@ if run_scan:
                     )
 
                 st.success(
+
                     f"Scanner selesai — "
-                    f"{len(results)} setup ditemukan."
+                    f"{len(results)} "
+                    f"setup ditemukan."
+
                 )
 
 
@@ -1686,15 +2300,23 @@ if scan_results:
         ]
 
         icon = (
+
             "🟢"
+
             if outlook == "LONG"
-            else "🔴"
+
+            else
+
+            "🔴"
+
         )
 
         st.markdown(
+
             f"### {icon} "
             f"{result['pair']} — "
             f"OUTLOOK {outlook}"
+
         )
 
         col1, col2, col3 = (
@@ -1704,21 +2326,31 @@ if scan_results:
         with col1:
 
             st.metric(
+
                 "Current Price",
+
                 fmt_price(
+
                     result[
                         "current_price"
                     ]
+
                 )
+
             )
 
             st.metric(
+
                 "Movement",
+
                 fmt_pct(
+
                     result[
                         "movement"
                     ]
+
                 )
+
             )
 
         with col2:
@@ -1728,9 +2360,11 @@ if scan_results:
             )
 
             st.write(
+
                 f"{fmt_price(result['entry_low'])}"
                 f" — "
                 f"{fmt_price(result['entry_high'])}"
+
             )
 
             st.write(
@@ -1738,11 +2372,15 @@ if scan_results:
             )
 
             st.write(
+
                 fmt_price(
+
                     result[
                         "take_profit"
                     ]
+
                 )
+
             )
 
         with col3:
@@ -1752,35 +2390,52 @@ if scan_results:
             )
 
             st.write(
+
                 fmt_price(
+
                     result[
                         "stop_loss"
                     ]
+
                 )
+
             )
 
             st.write(
+
                 "Volatility: "
                 f"{fmt_pct(result['volatility'])}"
+
             )
 
             st.write(
+
                 "Confidence: "
                 f"{result['confidence']:.0f}%"
+
             )
 
         chart_key = (
+
             "chart_"
+
             + result["pair"]
+
             + "_"
+
             + result["timeframe"]
+
         )
 
         if st.button(
+
             f"📈 Open Chart — "
             f"{result['pair']}",
+
             key=chart_key,
+
             use_container_width=True
+
         ):
 
             st.session_state[
@@ -1806,7 +2461,10 @@ selected_pair = (
 if selected_pair:
 
     st.subheader(
-        f"Chart — {selected_pair}"
+
+        f"Chart — "
+        f"{selected_pair}"
+
     )
 
     show_tradingview(
@@ -1814,8 +2472,11 @@ if selected_pair:
     )
 
     if st.button(
+
         "✖ Close Chart",
+
         use_container_width=True
+
     ):
 
         st.session_state[
@@ -1843,20 +2504,26 @@ if history.empty:
 
 else:
 
-    total = len(history)
+    total = len(
+        history
+    )
 
     success = len(
+
         history[
             history["status"]
             == "SUCCESS"
         ]
+
     )
 
     loss = len(
+
         history[
             history["status"]
             == "LOSS"
         ]
+
     )
 
     closed = (
@@ -1867,8 +2534,10 @@ else:
     if closed > 0:
 
         winrate = (
+
             success
             / closed
+
         ) * 100
 
     else:
@@ -1909,15 +2578,21 @@ else:
     with c4:
 
         st.metric(
+
             "Win Rate",
+
             f"{winrate:.2f}%"
+
         )
 
     with c5:
 
         st.metric(
+
             "Avg P/L",
+
             f"{avg_pnl:.2f}%"
+
         )
 
     display_history = (
@@ -1927,55 +2602,97 @@ else:
     display_history[
         "timestamp"
     ] = pd.to_datetime(
+
         display_history[
             "timestamp"
         ],
+
         errors="coerce"
+
     )
 
     display_history = (
+
         display_history[
+
             [
+
                 "timestamp",
+
                 "pair",
+
                 "timeframe",
+
                 "outlook",
+
                 "entry_low",
+
                 "entry_high",
+
                 "take_profit",
+
                 "stop_loss",
+
                 "current_price",
+
                 "movement",
+
                 "volatility",
+
                 "confidence",
+
                 "status",
+
                 "pnl_percent"
+
             ]
+
         ]
+
         .head(50)
+
     )
 
     display_history.columns = [
+
         "Time",
+
         "Pair",
+
         "TF",
+
         "Outlook",
+
         "Entry Low",
+
         "Entry High",
+
         "Take Profit",
+
         "Stop Loss",
+
         "Price",
+
         "Movement %",
+
         "Volatility %",
+
         "Confidence",
+
         "Status",
+
         "P/L %"
+
     ]
 
     st.dataframe(
+
         display_history,
+
         use_container_width=True,
+
         hide_index=True
+
     )
 
 
@@ -1986,11 +2703,15 @@ else:
 st.divider()
 
 st.caption(
+
     "0xmwY Kraken • "
     "Market scanner & simulated performance"
+
 )
 
 st.caption(
+
     "⚠️ Signal bukan financial advice. "
     "DYOR sebelum mengambil keputusan trading."
+
 )
