@@ -22,6 +22,17 @@ TIMEFRAMES = {
 
 MAX_MOVER = 12
 
+# =========================================================
+# DEMO AUTO TRADE
+# =========================================================
+
+DEMO_MARGIN = 1.0
+
+DEMO_MODE = True
+
+LEVERAGE_MIN = 2
+LEVERAGE_MAX = 20
+
 
 # =========================================================
 # HEADER
@@ -109,7 +120,11 @@ def migrate_db():
         "sl": "REAL",
         "status": "TEXT DEFAULT 'OPEN'",
         "pnl_pct": "REAL DEFAULT 0",
-        "resolved_at": "TEXT"
+        "resolved_at": "TEXT",
+        "leverage": "REAL DEFAULT 1",
+        "margin_usd": "REAL DEFAULT 1",
+        "trade_pnl_usd": "REAL DEFAULT 0",
+        "entry_price": "REAL"
     }
 
     for name, typ in additions.items():
@@ -164,11 +179,16 @@ def save_results(results):
                 sl,
                 confidence,
                 status,
-                pnl_pct
+                pnl_pct,
+                leverage,
+                margin_usd,
+                trade_pnl_usd,
+                entry_price
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, 'OPEN', 0
+                ?, ?, ?, ?, 'OPEN', 0,
+                ?, ?, 0, ?
             )
         """, (
             x["timestamp"],
@@ -180,7 +200,10 @@ def save_results(results):
             x["entry_high"],
             x["tp"],
             x["sl"],
-            x["confidence"]
+            x["confidence"],
+            x.get("leverage", 1),
+            DEMO_MARGIN,
+            x.get("entry_price")
         ))
 
     con.commit()
@@ -456,6 +479,39 @@ def analyze_tf(df):
 
 
 # =========================================================
+# DEMO LEVERAGE
+# =========================================================
+
+def calculate_demo_leverage(
+    confidence,
+    volatility
+):
+
+    if confidence >= 90 and volatility <= 5:
+        return 20
+
+    if confidence >= 90 and volatility <= 8:
+        return 15
+
+    if confidence >= 80 and volatility <= 5:
+        return 12
+
+    if confidence >= 80 and volatility <= 8:
+        return 10
+
+    if confidence >= 70 and volatility <= 5:
+        return 8
+
+    if confidence >= 70 and volatility <= 8:
+        return 5
+
+    if volatility > 12:
+        return 2
+
+    return 3
+
+
+# =========================================================
 # COIN ANALYSIS
 # =========================================================
 
@@ -534,17 +590,22 @@ def analyze_coin(inst):
         * 100
     )
 
+    leverage = calculate_demo_leverage(
+        confidence,
+        vol
+    )
+
     return {
         "outlook": side,
         "entry_low": entry_low,
         "entry_high": entry_high,
         "tp": tp,
         "sl": sl,
-        "confidence": confidence
-    }
-
-
-# =========================================================
+        "confidence": confidence,
+        "leverage": leverage,
+        "entry_price": price
+            }
+    # =========================================================
 # SCREENING
 # =========================================================
 
@@ -580,7 +641,9 @@ def screening():
             "entry_high": result["entry_high"],
             "tp": result["tp"],
             "sl": result["sl"],
-            "confidence": result["confidence"]
+            "confidence": result["confidence"],
+            "leverage": result["leverage"],
+            "entry_price": result["entry_price"]
         })
 
     return sorted(
@@ -591,6 +654,41 @@ def screening():
         ),
         reverse=True
     )
+
+
+# =========================================================
+# DEMO AUTO TRADE
+# =========================================================
+
+def demo_trade_info(
+    outlook,
+    entry_price,
+    current_price,
+    leverage
+):
+
+    if entry_price <= 0:
+        return 0
+
+    if outlook == "LONG":
+
+        price_change = (
+            current_price - entry_price
+        ) / entry_price
+
+    else:
+
+        price_change = (
+            entry_price - current_price
+        ) / entry_price
+
+    pnl_pct = (
+        price_change
+        * leverage
+        * 100
+    )
+
+    return pnl_pct
 
 
 # =========================================================
@@ -609,7 +707,10 @@ def resolve_history():
             entry_low,
             entry_high,
             tp,
-            sl
+            sl,
+            leverage,
+            margin_usd,
+            entry_price
         FROM history
         WHERE status = 'OPEN'
     """).fetchall()
@@ -623,9 +724,19 @@ def resolve_history():
         entry_high = row[4]
         tp = row[5]
         sl = row[6]
+        leverage = row[7] or 1
+        margin_usd = row[8] or DEMO_MARGIN
+        entry_price = row[9]
 
         if sl is None:
             continue
+
+        if entry_price is None:
+
+            if side == "LONG":
+                entry_price = entry_high
+            else:
+                entry_price = entry_low
 
         df = get_candles(
             pair + "-SWAP",
@@ -640,7 +751,7 @@ def resolve_history():
         )
 
         status = None
-        pnl = 0
+        pnl_pct = 0
 
         if side == "LONG":
 
@@ -648,19 +759,29 @@ def resolve_history():
 
                 status = "SUCCESS"
 
-                pnl = (
-                    (tp - entry_high)
-                    / entry_high
-                ) * 100
+                raw_move = (
+                    tp - entry_price
+                ) / entry_price
+
+                pnl_pct = (
+                    raw_move
+                    * leverage
+                    * 100
+                )
 
             elif current <= sl:
 
                 status = "LOSS"
 
-                pnl = (
-                    (sl - entry_high)
-                    / entry_high
-                ) * 100
+                raw_move = (
+                    sl - entry_price
+                ) / entry_price
+
+                pnl_pct = (
+                    raw_move
+                    * leverage
+                    * 100
+                )
 
         else:
 
@@ -668,19 +789,35 @@ def resolve_history():
 
                 status = "SUCCESS"
 
-                pnl = (
-                    (entry_low - tp)
-                    / entry_low
-                ) * 100
+                raw_move = (
+                    entry_price - tp
+                ) / entry_price
+
+                pnl_pct = (
+                    raw_move
+                    * leverage
+                    * 100
+                )
 
             elif current >= sl:
 
                 status = "LOSS"
 
-                pnl = (
-                    (entry_low - sl)
-                    / entry_low
-                ) * 100
+                raw_move = (
+                    entry_price - sl
+                ) / entry_price
+
+                pnl_pct = (
+                    raw_move
+                    * leverage
+                    * 100
+                )
+
+        trade_pnl_usd = (
+            margin_usd
+            * pnl_pct
+            / 100
+        )
 
         if status:
 
@@ -689,11 +826,13 @@ def resolve_history():
                 SET
                     status = ?,
                     pnl_pct = ?,
+                    trade_pnl_usd = ?,
                     resolved_at = ?
                 WHERE id = ?
             """, (
                 status,
-                pnl,
+                pnl_pct,
+                trade_pnl_usd,
                 datetime.now(
                     timezone.utc
                 ).isoformat(),
@@ -702,7 +841,70 @@ def resolve_history():
 
     con.commit()
     con.close()
-   # =========================================================
+
+
+# =========================================================
+# DEMO ACCOUNT SUMMARY
+# =========================================================
+
+def get_demo_summary():
+
+    history = get_history()
+
+    if history.empty:
+
+        return {
+            "trades": 0,
+            "success": 0,
+            "loss": 0,
+            "open": 0,
+            "profit_pct": 0,
+            "loss_pct": 0,
+            "net_pnl": 0
+        }
+
+    success = history[
+        history["status"] == "SUCCESS"
+    ]
+
+    losses = history[
+        history["status"] == "LOSS"
+    ]
+
+    opened = history[
+        history["status"] == "OPEN"
+    ]
+
+    profit_pct = (
+        success["pnl_pct"].sum()
+        if not success.empty
+        else 0
+    )
+
+    loss_pct = (
+        losses["pnl_pct"].sum()
+        if not losses.empty
+        else 0
+    )
+
+    net_pnl = (
+        history["trade_pnl_usd"].sum()
+        if "trade_pnl_usd" in history.columns
+        else 0
+    )
+
+    return {
+        "trades": len(history),
+        "success": len(success),
+        "loss": len(losses),
+        "open": len(opened),
+        "profit_pct": profit_pct,
+        "loss_pct": loss_pct,
+        "net_pnl": net_pnl
+    }
+
+
+# =========================================================
 # SESSION
 # =========================================================
 
@@ -714,9 +916,7 @@ if "selected_pair" not in st.session_state:
 
 if "last_scan" not in st.session_state:
     st.session_state.last_scan = "-"
-
-
-# =========================================================
+    # =========================================================
 # SCREEN NOW
 # =========================================================
 
@@ -826,6 +1026,16 @@ def show_card(x, key, icon):
         st.caption(
             f"Confidence: "
             f"{x['confidence']:.0f}%"
+        )
+
+        st.caption(
+            f"Demo Leverage: "
+            f"{x.get('leverage', 1):.0f}x"
+        )
+
+        st.caption(
+            f"Demo Margin: "
+            f"${DEMO_MARGIN:.2f}"
         )
 
         if st.button(
@@ -995,7 +1205,10 @@ else:
             "sl": "Stop Loss",
             "confidence": "Confidence %",
             "status": "Status",
-            "pnl_pct": "P/L %"
+            "pnl_pct": "P/L %",
+            "leverage": "Leverage",
+            "margin_usd": "Margin $",
+            "trade_pnl_usd": "Trade P/L $"
         }
     )
 
@@ -1015,6 +1228,18 @@ else:
         display["P/L %"].round(2)
     )
 
+    display["Leverage"] = (
+        display["Leverage"].round(0)
+    )
+
+    display["Margin $"] = (
+        display["Margin $"].round(2)
+    )
+
+    display["Trade P/L $"] = (
+        display["Trade P/L $"].round(4)
+    )
+
     st.dataframe(
         display[
             [
@@ -1028,16 +1253,17 @@ else:
                 "Take Profit",
                 "Stop Loss",
                 "Confidence %",
+                "Leverage",
+                "Margin $",
                 "Status",
-                "P/L %"
+                "P/L %",
+                "Trade P/L $"
             ]
         ],
         use_container_width=True,
         hide_index=True
-    )
-
-
-# =========================================================
+            )
+            # =========================================================
 # 24H PERFORMANCE
 # =========================================================
 
@@ -1091,8 +1317,9 @@ else:
     )
 
     net_pnl = (
-        total_profit
-        + total_loss
+        perf["trade_pnl_usd"].sum()
+        if "trade_pnl_usd" in perf.columns
+        else 0
     )
 
     a, b, c, d, e = st.columns(5)
@@ -1129,7 +1356,7 @@ else:
 
         st.metric(
             "NET P/L",
-            f"{net_pnl:+.2f}%"
+            f"${net_pnl:+.4f}"
         )
 
     st.caption(
@@ -1158,6 +1385,8 @@ else:
                 "pair",
                 "outlook",
                 "pnl_pct",
+                "trade_pnl_usd",
+                "leverage",
                 "resolved_at"
             ]
         ].copy()
@@ -1166,11 +1395,21 @@ else:
             "Pair",
             "Outlook",
             "Profit %",
+            "Profit $",
+            "Leverage",
             "Resolved"
         ]
 
         s["Profit %"] = (
             s["Profit %"].round(2)
+        )
+
+        s["Profit $"] = (
+            s["Profit $"].round(4)
+        )
+
+        s["Leverage"] = (
+            s["Leverage"].round(0)
         )
 
         s["Resolved"] = (
@@ -1214,6 +1453,8 @@ else:
                 "pair",
                 "outlook",
                 "pnl_pct",
+                "trade_pnl_usd",
+                "leverage",
                 "resolved_at"
             ]
         ].copy()
@@ -1222,11 +1463,21 @@ else:
             "Pair",
             "Outlook",
             "Loss %",
+            "Loss $",
+            "Leverage",
             "Resolved"
         ]
 
         l["Loss %"] = (
             l["Loss %"].round(2)
+        )
+
+        l["Loss $"] = (
+            l["Loss $"].round(4)
+        )
+
+        l["Leverage"] = (
+            l["Leverage"].round(0)
         )
 
         l["Resolved"] = (
@@ -1250,6 +1501,59 @@ else:
 
 
 # =========================================================
+# DEMO AUTO TRADE STATUS
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "🤖 Auto Trade — Demo"
+)
+
+summary = get_demo_summary()
+
+x1, x2, x3, x4 = st.columns(4)
+
+with x1:
+
+    st.metric(
+        "Demo Trades",
+        summary["trades"]
+    )
+
+with x2:
+
+    st.metric(
+        "Profit %",
+        f"+{summary['profit_pct']:.2f}%"
+    )
+
+with x3:
+
+    st.metric(
+        "Loss %",
+        f"{summary['loss_pct']:.2f}%"
+    )
+
+with x4:
+
+    st.metric(
+        "PNL 24H",
+        f"${summary['net_pnl']:+.4f}"
+    )
+
+st.caption(
+    "LBank status: DEMO / SIMULATED"
+)
+
+st.caption(
+    f"Margin per trade: ${DEMO_MARGIN:.2f} • "
+    f"Leverage: {LEVERAGE_MIN}x–{LEVERAGE_MAX}x • "
+    "No real orders are sent."
+)
+
+
+# =========================================================
 # FOOTER
 # =========================================================
 
@@ -1257,4 +1561,4 @@ st.divider()
 
 st.caption(
     "Informational scanner — DYOR."
-) 
+        )
