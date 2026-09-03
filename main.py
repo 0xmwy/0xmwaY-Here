@@ -104,8 +104,13 @@ session.headers.update({
         "(KHTML, like Gecko) "
         "Chrome/131.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json,text/plain,*/*",
-    "Accept-Language": "en-US,en;q=0.9"
+    "Accept": (
+        "application/json,"
+        "text/plain,*/*"
+    ),
+    "Accept-Language": (
+        "en-US,en;q=0.9"
+    )
 })
 
 
@@ -137,7 +142,7 @@ def api_get(
 
 
 # =========================================================
-# OKX MARKET DATA
+# MARKET DATA
 # =========================================================
 
 @st.cache_data(ttl=60)
@@ -157,7 +162,10 @@ def get_swap_instruments():
 
     for item in data.get("data", []):
 
-        inst_id = item.get("instId", "")
+        inst_id = item.get(
+            "instId",
+            ""
+        )
 
         if not inst_id.endswith(
             "-USDT-SWAP"
@@ -564,10 +572,6 @@ def analyze_market(
         / previous_close
     ) * 100
 
-    # =====================================================
-    # SCORE
-    # =====================================================
-
     long_score = 0
     short_score = 0
 
@@ -583,31 +587,22 @@ def analyze_market(
 
     if 50 <= rsi <= 70:
         long_score += 2
-
     elif 30 <= rsi < 50:
         short_score += 1
-
     elif rsi > 70:
         short_score += 1
-
     elif rsi < 30:
         long_score += 1
 
     if momentum > 0:
         long_score += 1
-
     elif momentum < 0:
         short_score += 1
 
     if ema_distance > 0.15:
         long_score += 1
-
     elif ema_distance < -0.15:
         short_score += 1
-
-    # =====================================================
-    # OUTLOOK
-    # =====================================================
 
     if long_score >= short_score:
 
@@ -626,10 +621,6 @@ def analyze_market(
             50 + score * 6
         )
     )
-
-    # =====================================================
-    # TP / SL
-    # =====================================================
 
     risk_distance = max(
         atr * 1.2,
@@ -838,11 +829,10 @@ def update_performance():
                     tzinfo=timezone.utc
                 )
 
-            now = datetime.now(
-                timezone.utc
+            age = (
+                datetime.now(timezone.utc)
+                - created
             )
-
-            age = now - created
 
             inst_id = (
                 str(row["pair"])
@@ -1033,15 +1023,13 @@ def lbank_signature(
         query_string.encode()
     ).hexdigest().upper()
 
-    signature = hmac.new(
+    return hmac.new(
         secret_key.encode(),
         md5_hash.encode(),
         hashlib.sha256
     ).hexdigest()
-
-    return signature
     # =========================================================
-# LBANK SERVER TIME
+# LBANK TIME
 # =========================================================
 
 def lbank_get_timestamp():
@@ -1121,6 +1109,132 @@ def lbank_get_timestamp():
         return None, {
             "error": str(e)
         }
+
+
+# =========================================================
+# SERVER IP
+# =========================================================
+
+def get_server_ip():
+
+    try:
+
+        r = requests.get(
+            "https://api.ipify.org?format=json",
+            timeout=10
+        )
+
+        try:
+            response = r.json()
+        except Exception:
+            response = r.text
+
+        return {
+            "http_status": r.status_code,
+            "response": response
+        }
+
+    except Exception as e:
+
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# =========================================================
+# LBANK PUBLIC / DOMAIN TEST
+# =========================================================
+
+def test_lbank_public():
+
+    tests = [
+
+        (
+            "LBank Contract API",
+            "https://lbkperp.lbank.com/"
+            "cfd/openApi/v1/pub/getTime"
+        ),
+
+        (
+            "LBank Contract Domain",
+            "https://lbkperp.lbank.com"
+        ),
+
+        (
+            "LBank Website",
+            "https://www.lbank.com"
+        )
+
+    ]
+
+    results = []
+
+    for label, url in tests:
+
+        try:
+
+            r = requests.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 "
+                        "(Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 "
+                        "Safari/537.36"
+                    ),
+                    "Accept": (
+                        "application/json,"
+                        "text/plain,*/*"
+                    ),
+                    "Accept-Language": (
+                        "en-US,en;q=0.9"
+                    )
+                },
+                timeout=15
+            )
+
+            results.append({
+
+                "test": label,
+
+                "url": url,
+
+                "http_status": r.status_code,
+
+                "content_type": (
+                    r.headers.get(
+                        "content-type"
+                    )
+                ),
+
+                "server": (
+                    r.headers.get(
+                        "server"
+                    )
+                ),
+
+                "response_preview": (
+                    r.text[:1000]
+                )
+
+            })
+
+        except Exception as e:
+
+            results.append({
+
+                "test": label,
+
+                "url": url,
+
+                "error": str(e)
+
+            })
+
+    return results
 
 
 # =========================================================
@@ -1231,125 +1345,20 @@ def lbank_test_connection():
             "success": False,
             "stage": "LBank account API",
             "http_status": r.status_code,
-            "content_type": r.headers.get(
-                "content-type"
-            ),
-            "server": r.headers.get(
-                "server"
-            ),
-            "response": r.text[:3000]
-        }
-
-
-# =========================================================
-# CHECK SERVER IP
-# =========================================================
-
-def get_server_ip():
-
-    try:
-
-        r = requests.get(
-            "https://api.ipify.org?format=json",
-            timeout=10
-        )
-
-        result = {
-            "http_status": r.status_code
-        }
-
-        try:
-
-            result["response"] = r.json()
-
-        except Exception:
-
-            result["response"] = r.text
-
-        return result
-
-    except Exception as e:
-
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-# =========================================================
-# TEST LBANK PUBLIC
-# =========================================================
-
-def test_lbank_public():
-
-    urls = [
-        (
-            "LBank Contract API",
-            "https://lbkperp.lbank.com/"
-            "cfd/openApi/v1/pub/getTime"
-        ),
-        (
-            "LBank Website",
-            "https://www.lbank.com"
-        )
-    ]
-
-    results = []
-
-    for label, url in urls:
-
-        try:
-
-            r = requests.get(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 "
-                        "(Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) "
-                        "Chrome/131.0.0.0 "
-                        "Safari/537.36"
-                    ),
-                    "Accept": (
-                        "application/json,"
-                        "text/plain,*/*"
-                    ),
-                    "Accept-Language": (
-                        "en-US,en;q=0.9"
-                    )
-                },
-                timeout=15
-            )
-
-            results.append({
-                "test": label,
-                "url": url,
-                "http_status": r.status_code,
-                "content_type": (
-                    r.headers.get(
-                        "content-type"
-                    )
-                ),
-                "server": (
-                    r.headers.get(
-                        "server"
-                    )
-                ),
-                "response_preview": (
-                    r.text[:1000]
+            "content_type": (
+                r.headers.get(
+                    "content-type"
                 )
-            })
-
-        except Exception as e:
-
-            results.append({
-                "test": label,
-                "url": url,
-                "error": str(e)
-            })
-
-    return results
+            ),
+            "server": (
+                r.headers.get(
+                    "server"
+                )
+            ),
+            "response": (
+                r.text[:3000]
+            )
+        }
 
 
 # =========================================================
@@ -1465,12 +1474,8 @@ with col2:
         use_container_width=True
     ):
 
-        public_result = (
-            test_lbank_public()
-        )
-
         st.json(
-            public_result
+            test_lbank_public()
         )
 
 
@@ -1519,7 +1524,11 @@ with st.sidebar:
 
     selected_timeframe = st.selectbox(
         "Timeframe",
-        ["15M", "30M", "1H"],
+        [
+            "15M",
+            "30M",
+            "1H"
+        ],
         index=0
     )
 
@@ -1541,7 +1550,7 @@ with st.sidebar:
 
     st.caption(
         "Auto trading belum diaktifkan."
-        )
+    )
     # =========================================================
 # UPDATE PERFORMANCE
 # =========================================================
@@ -1613,8 +1622,7 @@ if run_scan:
                         (
                             (index + 1)
                             / total
-                        )
-                        * 100
+                        ) * 100
                     )
                 )
 
@@ -1677,13 +1685,11 @@ if scan_results:
             "outlook"
         ]
 
-        if outlook == "LONG":
-
-            icon = "🟢"
-
-        else:
-
-            icon = "🔴"
+        icon = (
+            "🟢"
+            if outlook == "LONG"
+            else "🔴"
+        )
 
         st.markdown(
             f"### {icon} "
@@ -1691,7 +1697,9 @@ if scan_results:
             f"OUTLOOK {outlook}"
         )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3 = (
+            st.columns(3)
+        )
 
         with col1:
 
@@ -1848,13 +1856,6 @@ else:
         history[
             history["status"]
             == "LOSS"
-        ]
-    )
-
-    opened = len(
-        history[
-            history["status"]
-            == "OPEN"
         ]
     )
 
