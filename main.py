@@ -211,7 +211,7 @@ clean_db()
 
 
 # =========================================================
-# API
+# OKX API
 # =========================================================
 
 def api(path, params):
@@ -239,7 +239,7 @@ def api(path, params):
 
 
 # =========================================================
-# LBANK AUTHENTICATION
+# LBANK SIGNATURE
 # =========================================================
 
 def lbank_signature(params, secret_key):
@@ -264,6 +264,71 @@ def lbank_signature(params, secret_key):
     ).hexdigest()
 
 
+# =========================================================
+# LBANK SERVER TIME
+# =========================================================
+
+def lbank_get_timestamp():
+
+    response = requests.get(
+        LBANK_BASE + "/cfd/openApi/v1/pub/getTime",
+        timeout=15
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    # Some LBank responses expose timestamp
+    # through "data", while others expose "ts".
+
+    raw_data = data.get("data")
+
+    if isinstance(raw_data, dict):
+
+        for key in [
+            "timestamp",
+            "ts",
+            "time"
+        ]:
+
+            if raw_data.get(key):
+
+                return str(
+                    int(raw_data[key])
+                )
+
+    if isinstance(raw_data, (int, float, str)):
+
+        try:
+
+            return str(
+                int(raw_data)
+            )
+
+        except Exception:
+
+            pass
+
+    if data.get("ts"):
+
+        return str(
+            int(data["ts"])
+        )
+
+    # Fallback
+    return str(
+        int(
+            datetime.now().timestamp()
+            * 1000
+        )
+    )
+
+
+# =========================================================
+# LBANK TEST CONNECTION
+# =========================================================
+
 def lbank_test_connection():
 
     try:
@@ -271,11 +336,10 @@ def lbank_test_connection():
         api_key = st.secrets["LBANK_API_KEY"]
         secret_key = st.secrets["LBANK_SECRET_KEY"]
 
-        timestamp = str(
-            int(datetime.now().timestamp() * 1000)
-        )
+        timestamp = lbank_get_timestamp()
 
-        echostr = secrets.token_hex(20)[:32]
+        # 30-40 characters as required by LBank
+        echostr = secrets.token_hex(20)
 
         params = {
             "api_key": api_key,
@@ -291,23 +355,68 @@ def lbank_test_connection():
             secret_key
         )
 
+        headers = {
+            "Content-Type": "application/json",
+            "timestamp": timestamp,
+            "signature_method": "HmacSHA256",
+            "echostr": echostr
+        }
+
         response = requests.post(
             LBANK_BASE + "/cfd/openApi/v1/prv/account",
-            headers={
-                "Content-Type": "application/json",
-                "timestamp": timestamp,
-                "signature_method": "HmacSHA256",
-                "echostr": echostr
-            },
+            headers=headers,
             json=params,
             timeout=15
         )
 
-        return response.json()
+        raw_response = response.text
+
+        try:
+
+            data = response.json()
+
+        except Exception:
+
+            return {
+                "success": False,
+                "stage": "LBank account API",
+                "http_status": response.status_code,
+                "response": raw_response[:1000]
+            }
+
+        success = (
+            data.get("result") is True
+            or data.get("result") == "true"
+            or data.get("success") is True
+        )
+
+        return {
+            "success": success,
+            "http_status": response.status_code,
+            "data": data
+        }
+
+    except KeyError as e:
+
+        return {
+            "success": False,
+            "stage": "Streamlit Secrets",
+            "error": f"Missing secret: {e}"
+        }
+
+    except requests.exceptions.RequestException as e:
+
+        return {
+            "success": False,
+            "stage": "Network",
+            "error": str(e)
+        }
 
     except Exception as e:
 
         return {
+            "success": False,
+            "stage": "Python",
             "error": str(e)
         }
 
@@ -666,8 +775,8 @@ def screening():
             abs(x["movement"])
         ),
         reverse=True
-    )
-    # =========================================================
+                )
+# =========================================================
 # CHECK PROFIT / LOSS
 # =========================================================
 
@@ -793,7 +902,7 @@ if "last_scan" not in st.session_state:
 
 
 # =========================================================
-# LBANK CONNECTION TEST
+# LBANK CONNECTION
 # =========================================================
 
 st.divider()
@@ -813,17 +922,23 @@ if st.button(
 
         result = lbank_test_connection()
 
-    if result.get("result") is True:
+    if result.get("success"):
 
         st.success(
             "✅ LBank connected successfully."
         )
 
+        st.json(
+            result.get("data", result)
+        )
+
     else:
 
         st.error(
-            f"LBank connection failed: {result}"
+            "❌ LBank connection failed."
         )
+
+        st.json(result)
 
 
 # =========================================================
@@ -998,9 +1113,7 @@ with col2:
             x,
             f"short_{i}_{x['pair']}",
             "📉"
-        )
-
-
+        )    
 # =========================================================
 # TRADINGVIEW LIVE CHART
 # =========================================================
@@ -1052,7 +1165,9 @@ if st.session_state.selected_pair:
     components.html(
         html,
         height=670
-                )
+    )
+
+
 # =========================================================
 # HISTORY 24 HOURS
 # =========================================================
@@ -1365,4 +1480,4 @@ st.divider()
 
 st.caption(
     "Informational scanner — DYOR."
-)                
+)
