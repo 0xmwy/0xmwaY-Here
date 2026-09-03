@@ -23,12 +23,11 @@ TIMEFRAMES = {
 MAX_MOVER = 12
 
 # =========================================================
-# DEMO AUTO TRADE
+# DEMO PORTFOLIO
 # =========================================================
 
-DEMO_MARGIN = 1.0
-
-DEMO_MODE = True
+DEMO_INITIAL_BALANCE = 10.0
+DEMO_MARGIN_MIN = 0.25
 
 LEVERAGE_MIN = 2
 LEVERAGE_MAX = 20
@@ -122,9 +121,10 @@ def migrate_db():
         "pnl_pct": "REAL DEFAULT 0",
         "resolved_at": "TEXT",
         "leverage": "REAL DEFAULT 1",
-        "margin_usd": "REAL DEFAULT 1",
+        "margin_usd": "REAL DEFAULT 0",
         "trade_pnl_usd": "REAL DEFAULT 0",
-        "entry_price": "REAL"
+        "entry_price": "REAL",
+        "exit_price": "REAL"
     }
 
     for name, typ in additions.items():
@@ -152,59 +152,6 @@ def clean_db():
         "DELETE FROM history WHERE timestamp < ?",
         (cutoff,)
     )
-
-    con.commit()
-    con.close()
-
-
-def save_results(results):
-
-    if not results:
-        return
-
-    con = connect_db()
-
-    for x in results:
-
-        con.execute("""
-            INSERT INTO history (
-                timestamp,
-                pair,
-                outlook,
-                movement,
-                volatility,
-                entry_low,
-                entry_high,
-                tp,
-                sl,
-                confidence,
-                status,
-                pnl_pct,
-                leverage,
-                margin_usd,
-                trade_pnl_usd,
-                entry_price
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, 'OPEN', 0,
-                ?, ?, 0, ?
-            )
-        """, (
-            x["timestamp"],
-            x["pair"],
-            x["outlook"],
-            x["movement"],
-            x["volatility"],
-            x["entry_low"],
-            x["entry_high"],
-            x["tp"],
-            x["sl"],
-            x["confidence"],
-            x.get("leverage", 1),
-            DEMO_MARGIN,
-            x.get("entry_price")
-        ))
 
     con.commit()
     con.close()
@@ -255,6 +202,62 @@ def api(path, params):
     except Exception:
 
         return None
+
+
+# =========================================================
+# LIVE PRICE
+# =========================================================
+
+def get_live_price(inst):
+
+    data = api(
+        "/api/v5/market/ticker",
+        {
+            "instId": inst
+        }
+    )
+
+    if not data:
+        return None
+
+    try:
+        return float(data[0]["last"])
+    except Exception:
+        return None
+
+
+# =========================================================
+# LIVE PRICES — BATCH
+# =========================================================
+
+@st.cache_data(ttl=2)
+def get_live_prices():
+
+    data = api(
+        "/api/v5/market/tickers",
+        {
+            "instType": "SWAP"
+        }
+    )
+
+    if not data:
+        return {}
+
+    prices = {}
+
+    for x in data:
+
+        inst = x.get("instId", "")
+
+        if not inst.endswith("-USDT-SWAP"):
+            continue
+
+        try:
+            prices[inst] = float(x["last"])
+        except Exception:
+            continue
+
+    return prices
 
 
 # =========================================================
@@ -392,7 +395,6 @@ def get_candles(inst, bar):
             })
 
         except Exception:
-
             pass
 
     if not rows:
@@ -475,11 +477,9 @@ def analyze_tf(df):
         "confidence": confidence,
         "price": close.iloc[-1],
         "volatility": volatility
-    }
-
-
-# =========================================================
-# DEMO LEVERAGE
+        }
+    # =========================================================
+# LEVERAGE ENGINE
 # =========================================================
 
 def calculate_demo_leverage(
@@ -487,10 +487,21 @@ def calculate_demo_leverage(
     volatility
 ):
 
-    if confidence >= 90 and volatility <= 5:
+    # Volatility sangat tinggi:
+    # leverage otomatis ditekan.
+
+    if volatility > 20:
+        return 2
+
+    if volatility > 12:
+        return 3
+
+    # Setup sangat kuat + volatilitas sehat.
+
+    if confidence >= 100 and volatility <= 5:
         return 20
 
-    if confidence >= 90 and volatility <= 8:
+    if confidence >= 100 and volatility <= 8:
         return 15
 
     if confidence >= 80 and volatility <= 5:
@@ -499,14 +510,11 @@ def calculate_demo_leverage(
     if confidence >= 80 and volatility <= 8:
         return 10
 
-    if confidence >= 70 and volatility <= 5:
+    if confidence >= 66.67 and volatility <= 5:
         return 8
 
-    if confidence >= 70 and volatility <= 8:
+    if confidence >= 66.67 and volatility <= 8:
         return 5
-
-    if volatility > 12:
-        return 2
 
     return 3
 
@@ -603,9 +611,12 @@ def analyze_coin(inst):
         "sl": sl,
         "confidence": confidence,
         "leverage": leverage,
-        "entry_price": price
-            }
-    # =========================================================
+        "entry_price": price,
+        "volatility": vol
+    }
+
+
+# =========================================================
 # SCREENING
 # =========================================================
 
@@ -657,42 +668,313 @@ def screening():
 
 
 # =========================================================
-# DEMO AUTO TRADE
+# PORTFOLIO SCORE
 # =========================================================
 
-def demo_trade_info(
-    outlook,
+def calculate_strength(row):
+
+    confidence = float(
+        row["confidence"]
+    )
+
+    volatility = max(
+        float(row["volatility"]),
+        0.01
+    )
+
+    movement = abs(
+        float(row["movement"])
+    )
+
+    # Confidence menjadi faktor utama.
+    confidence_score = (
+        confidence / 100
+    )
+
+    # Volatility sehat mendapat skor lebih baik.
+    volatility_score = 1 / (
+        1 + volatility / 10
+    )
+
+    # Movement menunjukkan momentum.
+    movement_score = min(
+        movement / 10,
+        1
+    )
+
+    strength = (
+        confidence_score * 0.55
+        +
+        volatility_score * 0.30
+        +
+        movement_score * 0.15
+    )
+
+    return max(
+        strength,
+        0.01
+    )
+
+
+# =========================================================
+# ALLOCATE $10 PORTFOLIO
+# =========================================================
+
+def allocate_portfolio(results):
+
+    if not results:
+        return []
+
+    df = pd.DataFrame(results)
+
+    df["strength"] = df.apply(
+        calculate_strength,
+        axis=1
+    )
+
+    # Ranking berdasarkan strength.
+    df = df.sort_values(
+        "strength",
+        ascending=False
+    ).reset_index(drop=True)
+
+    total_strength = df[
+        "strength"
+    ].sum()
+
+    if total_strength <= 0:
+        return []
+
+    # Hanya alokasi maksimal $10.
+    total_available = (
+        DEMO_INITIAL_BALANCE
+    )
+
+    allocations = []
+
+    for _, row in df.iterrows():
+
+        margin = (
+            total_available
+            * row["strength"]
+            / total_strength
+        )
+
+        allocations.append(
+            margin
+        )
+
+    # Minimum margin supaya posisi
+    # tidak terlalu kecil.
+    allocations = [
+        max(
+            value,
+            DEMO_MARGIN_MIN
+        )
+        for value in allocations
+    ]
+
+    # Jika setelah minimum allocation
+    # melebihi $10, normalisasi kembali.
+    allocation_sum = sum(
+        allocations
+    )
+
+    if allocation_sum > total_available:
+
+        scale = (
+            total_available
+            / allocation_sum
+        )
+
+        allocations = [
+            value * scale
+            for value in allocations
+        ]
+
+    # Bulatkan sedikit untuk USD.
+    allocations = [
+        round(value, 4)
+        for value in allocations
+    ]
+
+    # Koreksi rounding agar total
+    # tidak pernah lebih dari $10.
+    total_allocated = sum(
+        allocations
+    )
+
+    if total_allocated > total_available:
+
+        excess = (
+            total_allocated
+            - total_available
+        )
+
+        allocations[-1] = max(
+            allocations[-1] - excess,
+            0
+        )
+
+    for i, margin in enumerate(
+        allocations
+    ):
+
+        item = df.iloc[i].to_dict()
+
+        item["margin_usd"] = margin
+
+        allocations_dummy = item
+
+        # Append hasil final.
+        allocations_dummy.pop(
+            "strength",
+            None
+        )
+
+        allocations_dummy[
+            "entry_price"
+        ] = float(
+            allocations_dummy[
+                "entry_price"
+            ]
+        )
+
+        allocations.append if False else None
+
+    final = []
+
+    for i in range(len(df)):
+
+        item = df.iloc[i].to_dict()
+
+        item.pop(
+            "strength",
+            None
+        )
+
+        item["margin_usd"] = allocations[
+            i
+        ]
+
+        final.append(item)
+
+    return final
+
+
+# =========================================================
+# PNL
+# =========================================================
+
+def calculate_pnl_pct(
+    side,
     entry_price,
     current_price,
     leverage
 ):
 
+    if not entry_price:
+        return 0
+
     if entry_price <= 0:
         return 0
 
-    if outlook == "LONG":
+    if side == "LONG":
 
-        price_change = (
-            current_price - entry_price
+        change = (
+            current_price
+            - entry_price
         ) / entry_price
 
     else:
 
-        price_change = (
-            entry_price - current_price
+        change = (
+            entry_price
+            - current_price
         ) / entry_price
 
-    pnl_pct = (
-        price_change
+    return (
+        change
         * leverage
         * 100
     )
 
-    return pnl_pct
+
+def calculate_pnl_usd(
+    pnl_pct,
+    margin_usd
+):
+
+    return (
+        margin_usd
+        * pnl_pct
+        / 100
+    )
 
 
 # =========================================================
-# CHECK PROFIT / LOSS
+# SAVE DEMO PORTFOLIO
+# =========================================================
+
+def save_results(results):
+
+    if not results:
+        return
+
+    con = connect_db()
+
+    for x in results:
+
+        con.execute("""
+            INSERT INTO history (
+                timestamp,
+                pair,
+                outlook,
+                movement,
+                volatility,
+                entry_low,
+                entry_high,
+                tp,
+                sl,
+                confidence,
+                status,
+                pnl_pct,
+                leverage,
+                margin_usd,
+                trade_pnl_usd,
+                entry_price,
+                exit_price
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, 'OPEN', 0,
+                ?, ?, 0, ?, NULL
+            )
+        """, (
+            x["timestamp"],
+            x["pair"],
+            x["outlook"],
+            x["movement"],
+            x["volatility"],
+            x["entry_low"],
+            x["entry_high"],
+            x["tp"],
+            x["sl"],
+            x["confidence"],
+            x.get("leverage", 1),
+            x.get(
+                "margin_usd",
+                0
+            ),
+            x.get(
+                "entry_price"
+            )
+        ))
+
+    con.commit()
+    con.close()
+    # =========================================================
+# RESOLVE OPEN TRADES
 # =========================================================
 
 def resolve_history():
@@ -715,192 +997,245 @@ def resolve_history():
         WHERE status = 'OPEN'
     """).fetchall()
 
+    if not rows:
+        con.close()
+        return
+
+    prices = get_live_prices()
+
     for row in rows:
 
         trade_id = row[0]
         pair = row[1]
         side = row[2]
+
         entry_low = row[3]
         entry_high = row[4]
+
         tp = row[5]
         sl = row[6]
-        leverage = row[7] or 1
-        margin_usd = row[8] or DEMO_MARGIN
-        entry_price = row[9]
 
-        if sl is None:
-            continue
+        leverage = (
+            row[7]
+            if row[7] is not None
+            else 1
+        )
 
-        if entry_price is None:
+        margin = (
+            row[8]
+            if row[8] is not None
+            else 0
+        )
+
+        entry = row[9]
+
+        # Backward compatibility dengan
+        # data lama.
+        if entry is None:
 
             if side == "LONG":
-                entry_price = entry_high
+                entry = entry_high
             else:
-                entry_price = entry_low
+                entry = entry_low
 
-        df = get_candles(
-            pair + "-SWAP",
-            "15m"
-        )
-
-        if df.empty:
+        if not entry:
             continue
 
-        current = float(
-            df["close"].iloc[-1]
+        inst = (
+            pair
+            + "-SWAP"
         )
 
+        current = prices.get(
+            inst
+        )
+
+        if current is None:
+            continue
+
         status = None
-        pnl_pct = 0
+        exit_price = None
 
         if side == "LONG":
 
             if current >= tp:
 
                 status = "SUCCESS"
-
-                raw_move = (
-                    tp - entry_price
-                ) / entry_price
-
-                pnl_pct = (
-                    raw_move
-                    * leverage
-                    * 100
-                )
+                exit_price = tp
 
             elif current <= sl:
 
                 status = "LOSS"
-
-                raw_move = (
-                    sl - entry_price
-                ) / entry_price
-
-                pnl_pct = (
-                    raw_move
-                    * leverage
-                    * 100
-                )
+                exit_price = sl
 
         else:
 
             if current <= tp:
 
                 status = "SUCCESS"
-
-                raw_move = (
-                    entry_price - tp
-                ) / entry_price
-
-                pnl_pct = (
-                    raw_move
-                    * leverage
-                    * 100
-                )
+                exit_price = tp
 
             elif current >= sl:
 
                 status = "LOSS"
+                exit_price = sl
 
-                raw_move = (
-                    entry_price - sl
-                ) / entry_price
+        if status is None:
+            continue
 
-                pnl_pct = (
-                    raw_move
-                    * leverage
-                    * 100
-                )
-
-        trade_pnl_usd = (
-            margin_usd
-            * pnl_pct
-            / 100
+        pnl_pct = calculate_pnl_pct(
+            side,
+            entry,
+            exit_price,
+            leverage
         )
 
-        if status:
+        pnl_usd = calculate_pnl_usd(
+            pnl_pct,
+            margin
+        )
 
-            con.execute("""
-                UPDATE history
-                SET
-                    status = ?,
-                    pnl_pct = ?,
-                    trade_pnl_usd = ?,
-                    resolved_at = ?
-                WHERE id = ?
-            """, (
-                status,
-                pnl_pct,
-                trade_pnl_usd,
-                datetime.now(
-                    timezone.utc
-                ).isoformat(),
-                trade_id
-            ))
+        con.execute("""
+            UPDATE history
+            SET
+                status = ?,
+                pnl_pct = ?,
+                trade_pnl_usd = ?,
+                resolved_at = ?,
+                exit_price = ?
+            WHERE id = ?
+        """, (
+            status,
+            pnl_pct,
+            pnl_usd,
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+            exit_price,
+            trade_id
+        ))
 
     con.commit()
     con.close()
 
 
 # =========================================================
-# DEMO ACCOUNT SUMMARY
+# PORTFOLIO STATUS
 # =========================================================
 
-def get_demo_summary():
+def get_portfolio_status():
 
     history = get_history()
 
     if history.empty:
 
         return {
-            "trades": 0,
-            "success": 0,
-            "loss": 0,
-            "open": 0,
-            "profit_pct": 0,
-            "loss_pct": 0,
-            "net_pnl": 0
+            "initial": DEMO_INITIAL_BALANCE,
+            "used": 0,
+            "available": DEMO_INITIAL_BALANCE,
+            "realized": 0,
+            "floating": 0,
+            "equity": DEMO_INITIAL_BALANCE,
+            "open": 0
         }
 
-    success = history[
-        history["status"] == "SUCCESS"
-    ]
-
-    losses = history[
-        history["status"] == "LOSS"
-    ]
-
-    opened = history[
+    open_trades = history[
         history["status"] == "OPEN"
-    ]
+    ].copy()
 
-    profit_pct = (
-        success["pnl_pct"].sum()
-        if not success.empty
-        else 0
+    closed_trades = history[
+        history["status"].isin(
+            ["SUCCESS", "LOSS"]
+        )
+    ].copy()
+
+    used = (
+        open_trades["margin_usd"]
+        .fillna(0)
+        .sum()
     )
 
-    loss_pct = (
-        losses["pnl_pct"].sum()
-        if not losses.empty
-        else 0
+    realized = (
+        closed_trades[
+            "trade_pnl_usd"
+        ]
+        .fillna(0)
+        .sum()
     )
 
-    net_pnl = (
-        history["trade_pnl_usd"].sum()
-        if "trade_pnl_usd" in history.columns
-        else 0
+    floating = 0
+
+    prices = get_live_prices()
+
+    for _, trade in open_trades.iterrows():
+
+        entry = trade.get(
+            "entry_price"
+        )
+
+        if pd.isna(entry):
+            continue
+
+        current = prices.get(
+            trade["pair"]
+            + "-SWAP"
+        )
+
+        if current is None:
+            continue
+
+        leverage = float(
+            trade.get(
+                "leverage",
+                1
+            )
+            or 1
+        )
+
+        margin = float(
+            trade.get(
+                "margin_usd",
+                0
+            )
+            or 0
+        )
+
+        pnl_pct = calculate_pnl_pct(
+            trade["outlook"],
+            float(entry),
+            current,
+            leverage
+        )
+
+        floating += calculate_pnl_usd(
+            pnl_pct,
+            margin
+        )
+
+    # Margin posisi OPEN masih menjadi
+    # bagian dari equity.
+    equity = (
+        DEMO_INITIAL_BALANCE
+        + realized
+        + floating
+    )
+
+    # Available margin:
+    # equity dikurangi margin yang sedang
+    # dipakai posisi OPEN.
+    available = max(
+        equity - used,
+        0
     )
 
     return {
-        "trades": len(history),
-        "success": len(success),
-        "loss": len(losses),
-        "open": len(opened),
-        "profit_pct": profit_pct,
-        "loss_pct": loss_pct,
-        "net_pnl": net_pnl
+        "initial": DEMO_INITIAL_BALANCE,
+        "used": used,
+        "available": available,
+        "realized": realized,
+        "floating": floating,
+        "equity": equity,
+        "open": len(open_trades)
     }
 
 
@@ -926,12 +1261,17 @@ if st.button(
 ):
 
     with st.spinner(
-        "Mencari coin volatile..."
+        "Menganalisis market & mengalokasikan portfolio $10..."
     ):
 
         results = screening()
 
-    st.session_state.results = results
+    # Portfolio allocator.
+    allocated = allocate_portfolio(
+        results
+    )
+
+    st.session_state.results = allocated
 
     st.session_state.last_scan = (
         datetime.now().strftime(
@@ -939,7 +1279,55 @@ if st.button(
         )
     )
 
-    save_results(results)
+    # Cek modal yang sudah digunakan.
+    portfolio = get_portfolio_status()
+
+    available = portfolio[
+        "available"
+    ]
+
+    final_results = []
+
+    # Jangan pernah membuka posisi
+    # lebih besar dari available margin.
+    for item in allocated:
+
+        requested = float(
+            item.get(
+                "margin_usd",
+                0
+            )
+        )
+
+        if available <= 0:
+            break
+
+        margin = min(
+            requested,
+            available
+        )
+
+        if margin < DEMO_MARGIN_MIN:
+            continue
+
+        item["margin_usd"] = round(
+            margin,
+            4
+        )
+
+        final_results.append(
+            item
+        )
+
+        available -= margin
+
+    st.session_state.results = (
+        final_results
+    )
+
+    save_results(
+        final_results
+    )
 
     clean_db()
 
@@ -953,7 +1341,7 @@ st.caption(
 
 
 # =========================================================
-# UPDATE PROFIT / LOSS
+# RESOLVE
 # =========================================================
 
 resolve_history()
@@ -988,7 +1376,11 @@ col1, col2 = st.columns(2)
 # CARD
 # =========================================================
 
-def show_card(x, key, icon):
+def show_card(
+    x,
+    key,
+    icon
+):
 
     with st.container(border=True):
 
@@ -1029,13 +1421,13 @@ def show_card(x, key, icon):
         )
 
         st.caption(
-            f"Demo Leverage: "
-            f"{x.get('leverage', 1):.0f}x"
+            f"Portfolio Margin: "
+            f"${x.get('margin_usd', 0):.4f}"
         )
 
         st.caption(
-            f"Demo Margin: "
-            f"${DEMO_MARGIN:.2f}"
+            f"Leverage: "
+            f"{x.get('leverage', 1):.0f}x"
         )
 
         if st.button(
@@ -1156,114 +1548,198 @@ if st.session_state.selected_pair:
 
 
 # =========================================================
-# HISTORY 24 HOURS
+# REALTIME DEMO AUTO TRADE
 # =========================================================
 
-st.divider()
+@st.fragment(run_every="3s")
+def realtime_demo():
 
-st.subheader(
-    "Screening History — 24 Hours"
-)
+    resolve_history()
 
-clean_db()
+    portfolio = get_portfolio_status()
 
-history = get_history()
+    st.divider()
 
-if history.empty:
-
-    st.info(
-        "Belum ada history screening."
+    st.subheader(
+        "🤖 Demo Auto Trade"
     )
 
-else:
+    a, b, c, d, e = st.columns(5)
 
-    display = history.copy()
+    with a:
 
-    display["timestamp"] = (
-        pd.to_datetime(
-            display["timestamp"],
-            utc=True
+        st.metric(
+            "Total Assets",
+            f"${portfolio['initial']:.2f}"
         )
-        .dt.tz_convert(
-            "Asia/Jakarta"
+
+    with b:
+
+        st.metric(
+            "Used Margin",
+            f"${portfolio['used']:.4f}"
         )
-        .dt.strftime(
-            "%Y-%m-%d %H:%M:%S"
+
+    with c:
+
+        st.metric(
+            "Available",
+            f"${portfolio['available']:.4f}"
         )
+
+    with d:
+
+        st.metric(
+            "Floating P/L",
+            f"${portfolio['floating']:+.4f}"
+        )
+
+    with e:
+
+        st.metric(
+            "Equity",
+            f"${portfolio['equity']:.4f}"
+        )
+
+    st.caption(
+        f"Open positions: "
+        f"{portfolio['open']}"
+        f" • Total portfolio margin maximum: "
+        f"${DEMO_INITIAL_BALANCE:.2f}"
     )
 
-    display = display.rename(
-        columns={
-            "timestamp": "Time",
-            "pair": "Pair",
-            "outlook": "Outlook",
-            "movement": "Movement %",
-            "volatility": "Volatility %",
-            "entry_low": "Entry Low",
-            "entry_high": "Entry High",
-            "tp": "Take Profit",
-            "sl": "Stop Loss",
-            "confidence": "Confidence %",
-            "status": "Status",
-            "pnl_pct": "P/L %",
-            "leverage": "Leverage",
-            "margin_usd": "Margin $",
-            "trade_pnl_usd": "Trade P/L $"
-        }
+    st.caption(
+        "LBank status: DEMO / SIMULATED"
+        " • Tidak mengirim real order."
     )
 
-    display["Movement %"] = (
-        display["Movement %"].round(2)
-    )
+    history = get_history()
 
-    display["Volatility %"] = (
-        display["Volatility %"].round(2)
-    )
+    if history.empty:
+        return
 
-    display["Confidence %"] = (
-        display["Confidence %"].round(0)
-    )
+    open_trades = history[
+        history["status"] == "OPEN"
+    ].copy()
 
-    display["P/L %"] = (
-        display["P/L %"].round(2)
-    )
+    prices = get_live_prices()
 
-    display["Leverage"] = (
-        display["Leverage"].round(0)
-    )
+    rows = []
 
-    display["Margin $"] = (
-        display["Margin $"].round(2)
-    )
+    for _, trade in open_trades.iterrows():
 
-    display["Trade P/L $"] = (
-        display["Trade P/L $"].round(4)
-    )
+        entry = trade.get(
+            "entry_price"
+        )
 
-    st.dataframe(
-        display[
-            [
-                "Time",
-                "Pair",
-                "Outlook",
-                "Movement %",
-                "Volatility %",
-                "Entry Low",
-                "Entry High",
-                "Take Profit",
-                "Stop Loss",
-                "Confidence %",
-                "Leverage",
-                "Margin $",
-                "Status",
-                "P/L %",
-                "Trade P/L $"
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True
+        if pd.isna(entry):
+            continue
+
+        entry = float(entry)
+
+        current = prices.get(
+            trade["pair"]
+            + "-SWAP"
+        )
+
+        if current is None:
+            continue
+
+        leverage = float(
+            trade.get(
+                "leverage",
+                1
             )
-            # =========================================================
+            or 1
+        )
+
+        margin = float(
+            trade.get(
+                "margin_usd",
+                0
+            )
+            or 0
+        )
+
+        pnl_pct = calculate_pnl_pct(
+            trade["outlook"],
+            entry,
+            current,
+            leverage
+        )
+
+        pnl_usd = calculate_pnl_usd(
+            pnl_pct,
+            margin
+        )
+
+        rows.append({
+            "Pair": trade["pair"],
+            "Side": trade["outlook"],
+            "Entry": entry,
+            "Current": current,
+            "Margin $": margin,
+            "Leverage": f"{leverage:.0f}x",
+            "P/L %": pnl_pct,
+            "P/L $": pnl_usd,
+            "Status": "OPEN"
+        })
+
+    if rows:
+
+        live_df = pd.DataFrame(
+            rows
+        )
+
+        live_df["Entry"] = (
+            live_df["Entry"].round(8)
+        )
+
+        live_df["Current"] = (
+            live_df["Current"].round(8)
+        )
+
+        live_df["Margin $"] = (
+            live_df["Margin $"].round(4)
+        )
+
+        live_df["P/L %"] = (
+            live_df["P/L %"].round(2)
+        )
+
+        live_df["P/L $"] = (
+            live_df["P/L $"].round(4)
+        )
+
+        st.dataframe(
+            live_df[
+                [
+                    "Pair",
+                    "Side",
+                    "Entry",
+                    "Current",
+                    "Margin $",
+                    "Leverage",
+                    "P/L %",
+                    "P/L $",
+                    "Status"
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    else:
+
+        st.info(
+            "Tidak ada posisi OPEN."
+        )
+
+
+realtime_demo()
+
+
+# =========================================================
 # 24H PERFORMANCE
 # =========================================================
 
@@ -1295,6 +1771,27 @@ else:
         perf["status"] == "OPEN"
     ]
 
+    total_profit = (
+        success[
+            "trade_pnl_usd"
+        ].fillna(0).sum()
+        if not success.empty
+        else 0
+    )
+
+    total_loss = (
+        losses[
+            "trade_pnl_usd"
+        ].fillna(0).sum()
+        if not losses.empty
+        else 0
+    )
+
+    net_pnl = (
+        total_profit
+        + total_loss
+    )
+
     closed = (
         len(success)
         + len(losses)
@@ -1305,20 +1802,6 @@ else:
         / closed
         * 100
         if closed
-        else 0
-    )
-
-    total_profit = (
-        success["pnl_pct"].sum()
-    )
-
-    total_loss = (
-        losses["pnl_pct"].sum()
-    )
-
-    net_pnl = (
-        perf["trade_pnl_usd"].sum()
-        if "trade_pnl_usd" in perf.columns
         else 0
     )
 
@@ -1349,7 +1832,7 @@ else:
 
         st.metric(
             "PROFIT",
-            f"+{total_profit:.2f}%"
+            f"+${total_profit:.4f}"
         )
 
     with e:
@@ -1365,192 +1848,111 @@ else:
 
 
     # =====================================================
-    # SUCCESS PAIRS
+    # TRADE HISTORY
     # =====================================================
 
-    st.markdown(
-        "### ✅ Pair Sukses"
+    display = perf.copy()
+
+    display["timestamp"] = (
+        pd.to_datetime(
+            display["timestamp"],
+            utc=True
+        )
+        .dt.tz_convert(
+            "Asia/Jakarta"
+        )
+        .dt.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     )
 
-    if success.empty:
+    display = display.rename(
+        columns={
+            "timestamp": "Time",
+            "pair": "Pair",
+            "outlook": "Outlook",
+            "entry_price": "Entry",
+            "exit_price": "Exit",
+            "tp": "TP",
+            "sl": "SL",
+            "leverage": "Leverage",
+            "margin_usd": "Margin $",
+            "pnl_pct": "P/L %",
+            "trade_pnl_usd": "P/L $",
+            "status": "Status"
+        }
+    )
 
-        st.info(
-            "Belum ada pair yang mencapai TP."
-        )
+    for column in [
+        "Entry",
+        "Exit",
+        "TP",
+        "SL",
+        "Leverage",
+        "Margin $",
+        "P/L %",
+        "P/L $"
+    ]:
 
-    else:
+        if column in display.columns:
 
-        s = success[
+            display[column] = pd.to_numeric(
+                display[column],
+                errors="coerce"
+            )
+
+    display["Entry"] = (
+        display["Entry"].round(8)
+    )
+
+    display["Exit"] = (
+        display["Exit"].round(8)
+    )
+
+    display["TP"] = (
+        display["TP"].round(8)
+    )
+
+    display["SL"] = (
+        display["SL"].round(8)
+    )
+
+    display["Leverage"] = (
+        display["Leverage"].round(0)
+    )
+
+    display["Margin $"] = (
+        display["Margin $"].round(4)
+    )
+
+    display["P/L %"] = (
+        display["P/L %"].round(2)
+    )
+
+    display["P/L $"] = (
+        display["P/L $"].round(4)
+    )
+
+    st.dataframe(
+        display[
             [
-                "pair",
-                "outlook",
-                "pnl_pct",
-                "trade_pnl_usd",
-                "leverage",
-                "resolved_at"
+                "Time",
+                "Pair",
+                "Outlook",
+                "Entry",
+                "Exit",
+                "TP",
+                "SL",
+                "Leverage",
+                "Margin $",
+                "Status",
+                "P/L %",
+                "P/L $"
             ]
-        ].copy()
-
-        s.columns = [
-            "Pair",
-            "Outlook",
-            "Profit %",
-            "Profit $",
-            "Leverage",
-            "Resolved"
-        ]
-
-        s["Profit %"] = (
-            s["Profit %"].round(2)
-        )
-
-        s["Profit $"] = (
-            s["Profit $"].round(4)
-        )
-
-        s["Leverage"] = (
-            s["Leverage"].round(0)
-        )
-
-        s["Resolved"] = (
-            pd.to_datetime(
-                s["Resolved"],
-                utc=True
-            )
-            .dt.tz_convert(
-                "Asia/Jakarta"
-            )
-            .dt.strftime(
-                "%H:%M:%S"
-            )
-        )
-
-        st.dataframe(
-            s,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-    # =====================================================
-    # LOSS PAIRS
-    # =====================================================
-
-    st.markdown(
-        "### ❌ Pair Loss"
+        ],
+        use_container_width=True,
+        hide_index=True
     )
-
-    if losses.empty:
-
-        st.info(
-            "Belum ada pair yang terkena SL."
-        )
-
-    else:
-
-        l = losses[
-            [
-                "pair",
-                "outlook",
-                "pnl_pct",
-                "trade_pnl_usd",
-                "leverage",
-                "resolved_at"
-            ]
-        ].copy()
-
-        l.columns = [
-            "Pair",
-            "Outlook",
-            "Loss %",
-            "Loss $",
-            "Leverage",
-            "Resolved"
-        ]
-
-        l["Loss %"] = (
-            l["Loss %"].round(2)
-        )
-
-        l["Loss $"] = (
-            l["Loss $"].round(4)
-        )
-
-        l["Leverage"] = (
-            l["Leverage"].round(0)
-        )
-
-        l["Resolved"] = (
-            pd.to_datetime(
-                l["Resolved"],
-                utc=True
-            )
-            .dt.tz_convert(
-                "Asia/Jakarta"
-            )
-            .dt.strftime(
-                "%H:%M:%S"
-            )
-        )
-
-        st.dataframe(
-            l,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-# =========================================================
-# DEMO AUTO TRADE STATUS
-# =========================================================
-
-st.divider()
-
-st.subheader(
-    "🤖 Auto Trade — Demo"
-)
-
-summary = get_demo_summary()
-
-x1, x2, x3, x4 = st.columns(4)
-
-with x1:
-
-    st.metric(
-        "Demo Trades",
-        summary["trades"]
-    )
-
-with x2:
-
-    st.metric(
-        "Profit %",
-        f"+{summary['profit_pct']:.2f}%"
-    )
-
-with x3:
-
-    st.metric(
-        "Loss %",
-        f"{summary['loss_pct']:.2f}%"
-    )
-
-with x4:
-
-    st.metric(
-        "PNL 24H",
-        f"${summary['net_pnl']:+.4f}"
-    )
-
-st.caption(
-    "LBank status: DEMO / SIMULATED"
-)
-
-st.caption(
-    f"Margin per trade: ${DEMO_MARGIN:.2f} • "
-    f"Leverage: {LEVERAGE_MIN}x–{LEVERAGE_MAX}x • "
-    "No real orders are sent."
-)
 
 
 # =========================================================
@@ -1561,4 +1963,4 @@ st.divider()
 
 st.caption(
     "Informational scanner — DYOR."
-        )
+)
